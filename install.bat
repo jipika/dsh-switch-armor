@@ -1,12 +1,20 @@
 @echo off
 chcp 65001 >nul
-title 安装Switch Armor插件
+title Switch Armor 安装向导
 echo.
 echo ======================================================
-echo    DeepSeek 网络安全红队工具「Switch Armor」安装向导
+echo    Switch Armor — 跨平台安装向导（Windows）
 echo ======================================================
 echo.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
+where node >nul 2>nul
+if errorlevel 1 (
+  echo 未找到 Node.js。
+  echo 请先安装 DeepSeek Harness 桌面端（自带 node），或安装 Node.js 20+ 后重试。
+  echo.
+  pause
+  exit /b 1
+)
+node "%~dp0scripts\install.mjs" %*
 echo.
 echo 按任意键退出...
 pause >nul

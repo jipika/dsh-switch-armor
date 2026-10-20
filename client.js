@@ -22,7 +22,7 @@
         var SETTINGS_FIELD = "enabled";
         /* 版本号：必须与 index.js 的 VERSION 和 package.json 的 version 一致。
            verify_prompt_gen4.mjs 第 6 节有四者相等断言锁死，别再手改单处。 */
-        var VERSION = "0.10.2";
+        var VERSION = "0.12.0";
 
         /* 视觉样式表（开关 + 状态条共用一张）：
            内联 style 无法声明 :focus-visible、也无法按 data-phase 组合多个状态，
@@ -315,7 +315,7 @@
          * 与 setting 同款：外部 store 缓存 + useSyncExternalStore 稳定引用。
          */
         function createRoutingSource() {
-          var state = { mode: "auto", manualPayload: "dsh", payloads: [], families: [], modelOverrides: {}, customPayload: { text: "" }, status: "loading", reason: "" };
+          var state = { mode: "auto", manualPayload: "dsh", payloads: [], families: [], modelOverrides: {}, customPayload: { text: "" }, align: true, status: "loading", reason: "" };
           var listeners = new Set();
           var sameObj = function (a, b) { return JSON.stringify(a) === JSON.stringify(b); };
           var publish = function (next) {
@@ -331,8 +331,9 @@
               && next.autoRetry === state.autoRetry
               && next.retryMax === state.retryMax
               && next.retryText === state.retryText
+              && next.align === state.align
               && sameObj(next.customPayload, state.customPayload)) return;
-            state = { mode: next.mode, manualPayload: next.manualPayload, payloads: next.payloads, families: next.families, modelOverrides: next.modelOverrides, customPayload: next.customPayload, injectFile: next.injectFile, injectFilePath: next.injectFilePath, injectFileActive: next.injectFileActive, baselinePolicy: next.baselinePolicy, autoRetry: next.autoRetry, retryMax: next.retryMax, retryText: next.retryText, status: next.status, reason: reason };
+            state = { mode: next.mode, manualPayload: next.manualPayload, payloads: next.payloads, families: next.families, modelOverrides: next.modelOverrides, customPayload: next.customPayload, injectFile: next.injectFile, injectFilePath: next.injectFilePath, injectFileActive: next.injectFileActive, baselinePolicy: next.baselinePolicy, autoRetry: next.autoRetry, retryMax: next.retryMax, retryText: next.retryText, align: next.align, status: next.status, reason: reason };
             listeners.forEach(function (listener) { listener(); });
           };
           var sync = function () {
@@ -341,7 +342,7 @@
               function () { return void 0; }
             ).then(function (payload) {
               if (payload === void 0 || payload.ok !== true) {
-                publish({ mode: state.mode, manualPayload: state.manualPayload, payloads: state.payloads, families: state.families, modelOverrides: state.modelOverrides, customPayload: state.customPayload, injectFile: state.injectFile, injectFilePath: state.injectFilePath, injectFileActive: state.injectFileActive, baselinePolicy: state.baselinePolicy, autoRetry: state.autoRetry, retryMax: state.retryMax, retryText: state.retryText, status: "unavailable", reason: "host 路由不可用" });
+                publish({ mode: state.mode, manualPayload: state.manualPayload, payloads: state.payloads, families: state.families, modelOverrides: state.modelOverrides, customPayload: state.customPayload, injectFile: state.injectFile, injectFilePath: state.injectFilePath, injectFileActive: state.injectFileActive, baselinePolicy: state.baselinePolicy, autoRetry: state.autoRetry, retryMax: state.retryMax, retryText: state.retryText, align: state.align, status: "unavailable", reason: "host 路由不可用" });
                 return;
               }
               publish({
@@ -358,6 +359,7 @@
                 autoRetry: payload.autoRetry === true,
                 retryMax: typeof payload.retryMax === "number" ? payload.retryMax : 1,
                 retryText: typeof payload.retryText === "string" ? payload.retryText : "继续",
+                align: payload.align !== false,
                 status: "ready"
               });
             });
@@ -377,8 +379,17 @@
                   mode: payload.mode === "manual" ? "manual" : "auto",
                   manualPayload: typeof payload.manualPayload === "string" ? payload.manualPayload : state.manualPayload,
                   payloads: state.payloads,
+                  families: state.families,
                   modelOverrides: payload.modelOverrides !== null && typeof payload.modelOverrides === "object" && !Array.isArray(payload.modelOverrides) ? payload.modelOverrides : state.modelOverrides,
                   customPayload: payload.customPayload !== null && typeof payload.customPayload === "object" && !Array.isArray(payload.customPayload) && typeof payload.customPayload.text === "string" ? { text: payload.customPayload.text } : state.customPayload,
+                  injectFile: state.injectFile,
+                  injectFilePath: state.injectFilePath,
+                  injectFileActive: state.injectFileActive,
+                  baselinePolicy: state.baselinePolicy,
+                  autoRetry: state.autoRetry,
+                  retryMax: state.retryMax,
+                  retryText: state.retryText,
+                  align: typeof payload.align === "boolean" ? payload.align : state.align,
                   status: "ready"
                 });
               }
@@ -410,7 +421,9 @@
             /** 判拒续跑开关（默认关）。 */
             setAutoRetry: function (on) { return write({ autoRetry: on === true }); },
             /** 外部注入文件开关。 */
-            setInjectFile: function (on) { return write({ injectFile: on === true }); }
+            setInjectFile: function (on) { return write({ injectFile: on === true }); },
+            /** 提示词对齐开关（v0.12.0，原 dsh-armor-align）。 */
+            setAlign: function (on) { return write({ align: on === true }); }
           };
         }
 
@@ -813,6 +826,13 @@
               "非空时顶替分流载荷",
               toggle("inject", snap.injectFile, snap.injectFile ? "开" : "关", function () { run(routing.setInjectFile(!snap.injectFile)); }),
               injectNote
+            ),
+            card(
+              "align",
+              "提示词对齐",
+              "改写宿主免责句与审批句",
+              toggle("align", snap.align !== false, snap.align !== false ? "开" : "关", function () { run(routing.setAlign(!(snap.align !== false))); }),
+              "默认开：把 workspace 指令外壳句与审批限制句换成强制句（原 dsh-armor-align，运行时改写、不改宿主文件）；关掉即完全保持宿主原文。"
             )
           );
         }

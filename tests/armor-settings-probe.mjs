@@ -64,6 +64,7 @@ let routeResponse = {
   ok: true,
   mode: "auto",
   manualPayload: "dsh",
+  align: true,
   payloads: [
     { id: "dsh", label: "dsh（Keysmith 短稿）" },
     { id: "dsh-gen4", label: "Switch Armor（原自持契约稿）" },
@@ -137,8 +138,8 @@ const buttons = nodes.filter((n) => n.type === "button");
 // 期望值由 mock 的载荷清单长度与兜底族数算出，避免下次加档/加族时漏改硬编码数字
 const payloadCount = routeResponse.payloads.length;
 const familyCount = 10; // client.js 兜底族清单（host 路由 families 为空时用）
-// 注入编排（v0.11.0）：baseline 三选 + 判拒续跑开关 + 注入文件开关 = 5 个按钮
-const orchestrationButtons = 5;
+// 注入编排（v0.11.0 + v0.12.0）：baseline 三选 + 判拒续跑 + 注入文件 + 提示词对齐 = 6 个按钮
+const orchestrationButtons = 6;
 const perFamily = 1 + (payloadCount + 1) + 2;
 const expectButtons = 2 + payloadCount + familyCount * perFamily + orchestrationButtons + 1;
 check(buttons.length === expectButtons,

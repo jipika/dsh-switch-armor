@@ -25,6 +25,7 @@ const SAMPLES_PATH = join(ROOT, "tests", "scorer-samples.jsonl");
 // 品牌纯净度：以下文件不得出现其它世代（含一代）字样
 const BRAND_CLEAN_FILES = [
   "index.js",
+  "align.js",
   "client.js",
   "package.json",
   "HARNESS_PLUGIN.md",
@@ -182,7 +183,7 @@ mustContain(indexSrc, "isEnabledForSession", "会话开关: 会话维度真值�
 mustContain(indexSrc, "sessionIdOf", "会话开关: 从 assemble context 取会话 id");
 mustContain(indexSrc, "SESSION_STORE", "会话开关: 覆盖表落盘路径");
 mustContain(indexSrc, '"/dsh-switch-armor/session"', "会话开关: 会话读写路由");
-mustContain(indexSrc, 'pluginVersion: "0.10.2"', "内核版本 0.10.2");
+mustContain(indexSrc, 'pluginVersion: "0.12.0"', "内核版本 0.12.0");
 mustContain(indexSrc, "switch_armor_profile", "保留 profile 元数据工具");
 mustContain(indexSrc, "armorProjectionApply", "保留会话投影评分器");
 mustContain(indexSrc, "stateVersion: 5", "投影版本 stateVersion 5（新增 turnSeq/refusalSeq 回滚锚点）");
@@ -286,7 +287,7 @@ mustContain(indexSrc, '"manual"', "配置: manual 模式取值");
 mustContain(indexSrc, "readState", "配置: 多字段状态解析（三层优先级链）");
 mustContain(indexSrc, "resolveField", "配置: 逐字段优先级解析");
 // POST 校验放宽为「至少一个合法字段」——并且非法值仍拒绝
-mustContain(indexSrc, "expected at least one of { enabled, mode, manualPayload, modelOverrides, customPayload, injectFile, baselinePolicy, autoRetry, retryMax, retryText }",
+mustContain(indexSrc, "expected at least one of { enabled, mode, manualPayload, modelOverrides, customPayload, injectFile, baselinePolicy, autoRetry, retryMax, retryText, align }",
   "配置: POST 放宽为至少一个合法字段（v0.11.0 注入编排字段并入）");
 mustContain(indexSrc, "expected { mode:", "配置: 非法 mode 仍 400");
 mustContain(indexSrc, "expected { manualPayload:", "配置: 非法 manualPayload 仍 400");
@@ -457,9 +458,9 @@ check(!existsSync(join(ROOT, "specialists")), "纯净架构: 零外部专家清�
 // ---- 5. package.json 规范断言 ----
 const pkg = existsSync(PKG_PATH) ? JSON.parse(readFileSync(PKG_PATH, "utf8")) : {};
 check(pkg.name === "dsh-switch-armor", "package.json name = dsh-switch-armor");
-check(pkg.version === "0.10.2", "package.json version = 0.10.2");
+check(pkg.version === "0.12.0", "package.json version = 0.12.0");
 check(pkg.dsh?.id === "dsh-switch-armor", "dsh.id = dsh-switch-armor");
-check(pkg.dsh?.version === "0.10.2", "dsh.version = 0.10.2");
+check(pkg.dsh?.version === "0.12.0", "dsh.version = 0.12.0");
 check(pkg.exports?.["./client"] === "./client.js", "client 导出映射对齐三代标准");
 
 // ---- 5b. 版本一致性（四者相等，期望值只从 package.json 读，不写死） ----
@@ -487,6 +488,23 @@ check(pkgVersion.length > 0, "package.json version 非空（作为唯一权威�
 check(versionIndex.length > 0 && versionIndex === pkgVersion, "index.js VERSION = package.json version", `index.js="${versionIndex}" pkg="${pkgVersion}"`);
 check(versionClient.length > 0 && versionClient === pkgVersion, "client.js VERSION = package.json version", `client.js="${versionClient}" pkg="${pkgVersion}"`);
 check(pkg.dsh?.version === pkgVersion, "dsh.version = package.json version", `dsh="${pkg.dsh?.version}" pkg="${pkgVersion}"`);
+
+// ---- 5c. 提示词对齐（v0.12.0：原 dsh-armor-align 并入同一仓库） ----
+// 两处改写逻辑必须留在宿主侧（装配瀑布 + pre-step），且由同一个 align 开关控制。
+const ALIGN_PATH = join(ROOT, "align.js");
+check(existsSync(ALIGN_PATH), "提示词对齐: align.js 存在（独立仓库已并入）");
+const alignSrc = existsSync(ALIGN_PATH) ? readFileSync(ALIGN_PATH, "utf8") : "";
+mustContain(alignSrc, "export function installAlign", "提示词对齐: installAlign 导出");
+mustContain(alignSrc, "system-prompt/assemble", "提示词对齐: 挂装配瀑布");
+mustContain(alignSrc, "refreshContext", "提示词对齐: 包装 refreshContext 快照");
+mustContain(alignSrc, 'source?.kind !== "agent-instructions"', "提示词对齐: pre-step 只改 agent-instructions");
+mustContain(alignSrc, "alignText", "提示词对齐: 纯函数可离线验证");
+mustContain(indexSrc, 'from "./align.js"', "提示词对齐: index.js 接入");
+mustContain(indexSrc, "ALIGN_FIELD", "提示词对齐: align 配置字段常量");
+mustContain(indexSrc, "installAlign(ctx, () => readState().align)", "提示词对齐: 开关回调接入注入管线");
+mustContain(indexSrc, "align: alignField()", "提示词对齐: 表单面 schema 含 align");
+check(Array.isArray(pkg.files) && pkg.files.includes("align.js"), "package.json files 含 align.js");
+check(pkg.exports?.["./align"] === "./align.js", "align 子路径导出");
 
 // ---- 6. 客户端状态条版本 ----
 const clientSrc = existsSync(join(ROOT, "client.js")) ? readFileSync(join(ROOT, "client.js"), "utf8") : "";

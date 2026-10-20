@@ -8,6 +8,9 @@ import Schema from "@deepseek-ai/schemastery";
 // 历史上两份副本曾双向漂移（RISK_MARKERS 与 web/game/llm 域词表不一致），
 // 状态条因此低报风险词、误判命中域。2026-10-08 规则表单源化。
 import { scoreResponse } from "./scripts/lib/scorer.mjs";
+// 提示词权威性对齐（原 dsh-armor-align，v0.12.0 并入）：改写宿主 workspace 外壳句与审批句。
+// 独立成模块而不是内联：两处改写逻辑（装配瀑布 + pre-step）与载荷注入正交，单测也按模块跑。
+import { installAlign } from "./align.js";
 
 // ── Switch Armor注入载荷（v0.7.0） ────────────────────────────────────────────────────
 // Order 主槽位与镜像槽位同时注册（DUAL_LAYER_INJECTION=true），
@@ -326,9 +329,9 @@ function matchPayloadId(model) {
 // 2026-10-05：置 true —— 按用户要求恢复双段（两文件逐字同源，效果 = 同一份载荷注入两遍）。
 const DUAL_LAYER_INJECTION = true;
 
-const VERSION = "0.10.2";
+const VERSION = "0.12.0";
 // 版本锚点（校验脚本按字面量断言，须与 package.json 的 version 同步）：
-//   pluginVersion: "0.10.2"
+//   pluginVersion: "0.12.0"
 
 // 开关落点：profile entry config（cordis.patch.yml → dsh-switch-armor.config.enabled）；
 // 0.2.x 由 settings 表单面写回：客户端开关 → ctx.remote.settings.mutate(ns, ops, revision)。
@@ -345,6 +348,8 @@ const BASELINE_POLICY_FIELD = "baselinePolicy";
 const AUTO_RETRY_FIELD = "autoRetry";
 const RETRY_MAX_FIELD = "retryMax";
 const RETRY_TEXT_FIELD = "retryText";
+// 提示词对齐（v0.12.0，原 dsh-armor-align）：改写宿主 workspace 外壳句与审批句
+const ALIGN_FIELD = "align";
 // 默认关闭：没写 config 时注入为空（零残留），需要时由对话框开关或手写
 // `config: { enabled: true }` 打开。默认值只存在于代码与部署组合层，
 // 用户开关是唯一的持久化写入方，因此「关掉」永远不会被写进设置文档。
@@ -516,6 +521,10 @@ const retryMaxField = () =>
   Schema.number().default(1).description("同一会话最多自动续跑次数（0 = 关闭）");
 const retryTextField = () =>
   Schema.string().default("继续").description("自动续跑注入的用户文本");
+// ── 提示词对齐字段（v0.12.0，原 dsh-armor-align）──────────────────────────────
+// 默认开：保持原独立插件的默认行为（挂载即改写）。关掉 = 系统提示完全保持宿主原文。
+const alignField = () =>
+  Schema.boolean().default(true).description("提示词对齐：改写宿主 workspace 指令的免责外壳句与审批限制句（运行时改写，不改宿主文件；默认开）");
 const SettingsSchema = Schema.object({
   enabled: enabledField(),
   mode: modeField(),
@@ -527,6 +536,7 @@ const SettingsSchema = Schema.object({
   autoRetry: autoRetryField(),
   retryMax: retryMaxField(),
   retryText: retryTextField(),
+  align: alignField(),
 }).description("Switch Armor / dsh-switch-armor 运行时开关");
 /** 0.2.x settings 表单面 schema：entry id = 插件 id，字段必须 volatile 才能在线编辑。 */
 export const Config = Schema.object({
@@ -540,6 +550,7 @@ export const Config = Schema.object({
   autoRetry: autoRetryField().volatile(),
   retryMax: retryMaxField().volatile(),
   retryText: retryTextField().volatile(),
+  align: alignField().volatile(),
 });
 
 // ── 会话级开关覆盖 ──────────────────────────────────────────────────────────────
@@ -728,6 +739,9 @@ function readState() {
       const raw = resolveField(resolved, runtimeOverride, RETRY_TEXT_FIELD);
       return typeof raw === "string" && raw.length > 0 ? raw : "继续";
     })(),
+    // ── 提示词对齐（v0.12.0）─────────────────────────────────────────────────
+    // 未写配置即默认开（与原 dsh-armor-align 「挂载即生效」语义一致）。
+    align: resolveField(resolved, runtimeOverride, ALIGN_FIELD) !== false,
   };
 }
 
@@ -826,6 +840,8 @@ async function handleSettingsRoute(req, res) {
         autoRetry: state.autoRetry,
         retryMax: state.retryMax,
         retryText: state.retryText,
+        // 提示词对齐（v0.12.0，原 dsh-armor-align）
+        align: state.align,
         source: runtimeOverride !== undefined ? "override" : "config",
       });
     }
@@ -931,10 +947,16 @@ async function handleSettingsRoute(req, res) {
     }
     patch[RETRY_TEXT_FIELD] = body.retryText.slice(0, 500);
   }
+  if (body.align !== undefined) {
+    if (typeof body.align !== "boolean") {
+      return sendJson(res, 400, { ok: false, error: "expected { align: boolean }" });
+    }
+    patch[ALIGN_FIELD] = body.align;
+  }
   if (Object.keys(patch).length === 0) {
     return sendJson(res, 400, {
       ok: false,
-      error: "expected at least one of { enabled, mode, manualPayload, modelOverrides, customPayload, injectFile, baselinePolicy, autoRetry, retryMax, retryText }",
+      error: "expected at least one of { enabled, mode, manualPayload, modelOverrides, customPayload, injectFile, baselinePolicy, autoRetry, retryMax, retryText, align }",
     });
   }
 
@@ -1261,6 +1283,16 @@ const profileTool = {
       lineage: [`dsh-switch-armor (v${VERSION}) — 按模型分流注入载荷 + 对话框热开关 + 按模型族覆盖`],
       // 总开关状态：enabled=false 时所有载荷均渲染为空串，系统提示词零残留
       enabled,
+      // 注入编排 + 提示词对齐（v0.11.0 / v0.12.0）：状态条与工具都能读回
+      orchestration: {
+        injectFile: state.injectFile,
+        injectFilePath: injectFilePath(),
+        injectFileActive: readInjectFile() !== undefined,
+        baselinePolicy: state.baselinePolicy,
+        autoRetry: state.autoRetry,
+        retryMax: state.retryMax,
+        align: state.align,
+      },
       // 载荷路由：auto = 按当前模型身份选（族覆盖可改判）；manual = 固定用手动指定那份
       payloadRouting: {
         mode: state.mode,
@@ -1648,4 +1680,10 @@ export function apply(ctx) {
       };
     }, "switch-armor: auto-retry");
   }
+
+  // ── 0.13 提示词对齐（v0.12.0，原 dsh-armor-align）──────────────────────────
+  // 与载荷注入同属一条管线：载荷负责「写进去」，对齐负责「把宿主自己写进去的
+  // 削弱句改回来」（workspace 外壳句 + 审批限制句）。监听器常驻、开关在回调里读，
+  // 设置页关闭后下一个模型步即恢复宿主原文，无需重启。
+  installAlign(ctx, () => readState().align);
 }
