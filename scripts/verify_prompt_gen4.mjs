@@ -154,15 +154,15 @@ mustContain(indexSrc, '"./prompts/claude-keysmith.md"', "载入 Claude 载荷");
 mustContain(indexSrc, '"./prompts/grok-keysmith.md"', "载入 Grok 载荷");
 mustContain(indexSrc, "switch-armor:global-system-prompt", "系统提示词主槽位注册");
 mustContain(indexSrc, "switch-armor:dual-layer-reinforce", "系统提示词镜像槽位代码保留");
-// 段位必须落在 persona(0) 与 dsh-memory(1) 之间的夹缝：这是 v0.7.1 引入的核心修复，
-// 把载荷从 order 100（排在 19.5k 记忆索引之后）提到 persona 之后、记忆之前。
-mustContain(indexSrc, "const PRIMARY_SECTION_ORDER = 0.1", "段位: 主槽位 order = 0.1（persona 之后、记忆之前）");
-mustContain(indexSrc, "const REINFORCE_SECTION_ORDER = 0.2", "段位: 镜像槽位 order = 0.2");
+// 段位必须落在 persona(0) 之后、PLAN_POLICY(500) 之前：v0.7.1 把载荷从 order 100
+// 提到 persona 之后；2026-10-19 把夹缝值 0.1/0.2 换成 50/60，余量由 0.2 扩到 50。
+mustContain(indexSrc, "const PRIMARY_SECTION_ORDER = 50", "段位: 主槽位 order = 50（persona 之后、PLAN_POLICY 之前）");
+mustContain(indexSrc, "const REINFORCE_SECTION_ORDER = 60", "段位: 镜像槽位 order = 60");
 check(!/order:\s*100\b/.test(indexSrc), "段位: 已无 order 100 残留（回归锁）");
 check(!/order:\s*200\b/.test(indexSrc), "段位: 已无 order 200 残留（回归锁）");
 mustContain(indexSrc, "order: PRIMARY_SECTION_ORDER", "段位: 主槽位注册引用常量");
 mustContain(indexSrc, "order: REINFORCE_SECTION_ORDER", "段位: 镜像槽位注册引用常量");
-mustContain(indexSrc, "dsh-memory:long-term", "段位: 注释里写明相邻占位（dsh-memory order 1）");
+mustContain(indexSrc, "dsh-memory:long-term", "段位: 注释里写明相邻占位（dsh-memory order 9500）");
 mustContain(indexSrc, "DUAL_LAYER_INJECTION", "保留双段注入开关");
 check(indexSrc.includes("const DUAL_LAYER_INJECTION = true"), "双段注入：DUAL_LAYER_INJECTION 已置 true");
 mustAbsent(indexSrc, "infinite-gen-3.md", "历史载荷未回流注入面（index.js 不引用 gen-3）");
@@ -209,6 +209,25 @@ for (const [rel, want, tag] of EXTERNAL_PAYLOAD_FILES) {
     check((raw.match(/\{\{/g) ?? []).length === 0, `${tag} 载荷无 {{ 混淆风险 ${rel}`);
   }
 }
+// ---- bundle patch 的模板卫生：只允许已注册的提示词变量 ----
+// cordis.patch.yml 的 system-prompt 段会被宿主当模板**严格**插值。2026-10-18 修过一次
+// `personaSuffix: Your working directory is {{cwd}}.`：当前 DSH 只注册 provider / model
+// 两个变量（cwd 走 runtime-context），保留它会让「没挂 persona 行的 preset / 子代理」
+// 在组装阶段抛 unknown prompt variable "{{cwd}}" in section "deployment:persona-suffix"，
+// 整轮在发出模型请求前就失败。注释行不算模板，扫描前先剔除。
+{
+  const patchPath = join(ROOT, "cordis.patch.yml");
+  const patch = existsSync(patchPath) ? readFileSync(patchPath, "utf8") : "";
+  check(patch.length > 0, "cordis.patch.yml 存在");
+  const body = patch.split("\n").filter((line) => !/^\s*#/.test(line)).join("\n");
+  const unknown = [...body.matchAll(/\{\{([^{}]*)\}\}/g)]
+    .map((m) => m[1])
+    .filter((name) => name !== "model");
+  check(unknown.length === 0, "cordis.patch.yml 只引用已注册提示词变量（{{model}}）",
+    unknown.length === 0 ? "" : `未知变量: ${unknown.join(", ")}`);
+  check(!/^\s+personaSuffix:/m.test(body), "cordis.patch.yml 不覆盖 personaSuffix");
+}
+
 // 三份新载荷的首行/特征锚点（防误替换成别的文件）
 {
   const readOr = (rel) => (existsSync(join(ROOT, rel)) ? readFileSync(join(ROOT, rel), "utf8") : "");
@@ -267,8 +286,8 @@ mustContain(indexSrc, '"manual"', "配置: manual 模式取值");
 mustContain(indexSrc, "readState", "配置: 多字段状态解析（三层优先级链）");
 mustContain(indexSrc, "resolveField", "配置: 逐字段优先级解析");
 // POST 校验放宽为「至少一个合法字段」——并且非法值仍拒绝
-mustContain(indexSrc, "expected at least one of { enabled, mode, manualPayload, modelOverrides, customPayload }",
-  "配置: POST 放宽为至少一个合法字段");
+mustContain(indexSrc, "expected at least one of { enabled, mode, manualPayload, modelOverrides, customPayload, injectFile, baselinePolicy, autoRetry, retryMax, retryText }",
+  "配置: POST 放宽为至少一个合法字段（v0.11.0 注入编排字段并入）");
 mustContain(indexSrc, "expected { mode:", "配置: 非法 mode 仍 400");
 mustContain(indexSrc, "expected { manualPayload:", "配置: 非法 manualPayload 仍 400");
 mustContain(indexSrc, 'typeof body.enabled !== "boolean"', "配置: enabled 类型校验保留");
@@ -281,7 +300,7 @@ mustAbsent(indexSrc, "return text.length > 0 ? text : PROMPT_TEXT",
   "载荷分流: 已废弃「一律回落 PROMPT_TEXT」的旧写法");
 // 双段只留给自持族：外部稿恒单段
 mustContain(indexSrc, "NATIVE_PAYLOAD_IDS", "双段口径: 自持族白名单");
-mustContain(indexSrc, '["dsh", "dsh-gen4"]', "双段口径: 自持族恰为 dsh 与 dsh-gen4");
+mustContain(indexSrc, '["dsh", "dsh-gen4", "dsv41v2", "glm53cn"]', "双段口径: 自持族恰为 dsh / dsh-gen4 / dsv41v2 / glm53cn");
 mustContain(indexSrc, "if (!dualLayerFor(context)) return \"\"",
   "双段口径: order 200 走 dualLayerFor（原生判定 + 族覆盖可强制）");
 // ── 0.10.2：按模型族覆盖 + 自定义载荷 ────────────────────────────────────────
@@ -306,8 +325,8 @@ mustContain(indexSrc, "__testSanitizeModelOverrides", "探针: 覆盖表清洗�
   const iMF = indexSrc.indexOf("const MODEL_FAMILIES = [");
   const mfBody = iMF >= 0 ? indexSrc.slice(iMF, indexSrc.indexOf("];", iMF) + 2) : "";
   const mfList = mfBody.match(/"([a-z0-9_-]+)"/g)?.map((s) => s.replaceAll('"', "")) ?? [];
-  check(mfList.length === 8 && mfList.includes("dsh") && !mfList.includes("dsh-gen4"),
-    "MODEL_FAMILIES: 8 族且不含载荷档 dsh-gen4", JSON.stringify(mfList));
+  check(mfList.length === 10 && mfList.includes("dsh") && mfList.includes("mimo") && mfList.includes("muse") && !mfList.includes("dsh-gen4") && !mfList.includes("glm53"),
+    "MODEL_FAMILIES: 10 族且不含载荷档 dsh-gen4 / glm53", JSON.stringify(mfList));
   // 正向：分流函数体内的全部 return 字面量必须都被 MODEL_FAMILIES 覆盖
   const fnStart = indexSrc.indexOf("function matchPayloadId");
   const fnBody = fnStart >= 0 ? indexSrc.slice(fnStart, indexSrc.indexOf("\n}", fnStart) + 2) : "";
@@ -315,36 +334,72 @@ mustContain(indexSrc, "__testSanitizeModelOverrides", "探针: 覆盖表清洗�
   const missing = [...new Set(returns)].filter((r) => !mfList.includes(r));
   check(returns.length > 0 && missing.length === 0,
     "MODEL_FAMILIES 覆盖 matchPayloadId 全部 return 值", `缺失: ${JSON.stringify(missing)}`);
-  // 反向：PAYLOAD_IDS 与 MODEL_FAMILIES 的差集恰为 dsh-gen4
+  // 反向：PAYLOAD_IDS 与 MODEL_FAMILIES 的差集恰为三份非族的载荷档
+  // （dsh-gen4 备用自持 / dsv41v2 对抗强化 / glm53cn GLM-5.3 中文稿）
   const piPI = indexSrc.indexOf("const PAYLOAD_IDS = [");
   const piBody = piPI >= 0 ? indexSrc.slice(piPI, indexSrc.indexOf("];", piPI) + 2) : "";
   const piList = piBody.match(/"([a-z0-9_-]+)"/g)?.map((s) => s.replaceAll('"', "")) ?? [];
   const diff = piList.filter((x) => !mfList.includes(x));
-  check(diff.length === 1 && diff[0] === "dsh-gen4",
-    "PAYLOAD_IDS \\ MODEL_FAMILIES 恰为 {dsh-gen4}", JSON.stringify(diff));
+  check(diff.length === 3 && diff.includes("dsh-gen4") && diff.includes("dsv41v2") && diff.includes("glm53cn"),
+    "PAYLOAD_IDS \\ MODEL_FAMILIES 恰为 {dsh-gen4, dsv41v2, glm53cn}", JSON.stringify(diff));
 }
+// v0.11.0 开箱即用：无显式选择时各族实际吃的载荷（单一来源 FAMILY_DEFAULT_PAYLOADS）
+mustContain(indexSrc, "FAMILY_DEFAULT_PAYLOADS", "开箱即用: 族默认载荷表存在");
+mustContain(indexSrc, 'FAMILY_DEFAULT_PAYLOADS = { dsh: "dsh-gen4" }',
+  "开箱即用: 只有 dsh 族设默认（dsh-gen4 原自持契约稿）；glm 等其余族回落同名档");
+mustContain(indexSrc, "FAMILY_DEFAULT_PAYLOADS[family] ?? family",
+  "开箱即用: resolvePayloadId 末尾回落族默认（override 仍优先）");
 mustContain(indexSrc, '"dsh-gen4": { label:', "载荷表: 备用自持档 dsh-gen4 在表内");
+mustContain(indexSrc, 'dsv41v2: { label: "DeepSeek V4.1 沙箱 v2（对抗强化）"', "载荷表: dsv41v2 对抗强化版在表内");
+mustContain(indexSrc, 'glm53cn: { label: "GLM-5.3 沙箱（中文稿）"', "载荷表: glm53cn 中文稿在表内");
 mustContain(indexSrc, "claude: { label:", "载荷表: claude 在表内");
 mustContain(indexSrc, "grok: { label:", "载荷表: grok 在表内");
 mustContain(indexSrc, 'glm: { label: "GLM（ZCode 载荷）"', "载荷表: glm 在表内");
 mustContain(indexSrc, 'kimi: { label: "Kimi（kimi-break 载荷）"', "载荷表: kimi 在表内");
-check(indexSrc.includes('const PAYLOAD_IDS = ["dsh", "dsh-gen4", "gpt61", "gpt6", "gpt56", "claude", "grok", "glm", "kimi"]'),
-  "载荷表: 白名单恰为 9 项");
+mustContain(indexSrc, 'mimo: { label: "MiMo（Xiaomi v2.6 载荷）"', "载荷表: mimo 在表内");
+mustContain(indexSrc, 'muse: { label: "Muse Spark（Meta 载荷）"', "载荷表: muse 在表内");
+check(indexSrc.includes('const PAYLOAD_IDS = ["dsh", "dsh-gen4", "dsv41v2", "glm53cn", "gpt61", "gpt6", "gpt56", "claude", "grok", "glm", "kimi", "mimo", "muse"]'),
+  "载荷表: 白名单恰为 13 项");
 // 新载荷文件必须真实存在且非空（loadPayloadTable 对缺失文件静默置空串，这里兜住）
 check(readFileSync(join(ROOT, "prompts/glm-keysmith.md"), "utf8").length > 1000, "载荷文件: glm-keysmith.md 存在且非空");
 check(readFileSync(join(ROOT, "prompts/kimi-break.md"), "utf8").length > 1000, "载荷文件: kimi-break.md 存在且非空");
 mustAbsent(readFileSync(join(ROOT, "prompts/kimi-break.md"), "utf8"), "${", "kimi 适配稿: 无残留宿主模板变量");
-// 家族锚定分支：claude / grok / glm / kimi 必须在「非 GPT 家族 → dsh」兜底之前
+check(readFileSync(join(ROOT, "prompts/mimo-v2.6-jailbreak.md"), "utf8").length > 30000, "载荷文件: mimo-v2.6-jailbreak.md 存在且非空");
+mustAbsent(readFileSync(join(ROOT, "prompts/mimo-v2.6-jailbreak.md"), "utf8"), "${", "mimo 原始稿: 无宿主模板变量");
+check(readFileSync(join(ROOT, "prompts/muse-spark-1.3.md"), "utf8").length > 5000, "载荷文件: muse-spark-1.3.md 存在且非空");
+mustAbsent(readFileSync(join(ROOT, "prompts/muse-spark-1.3.md"), "utf8"), "${", "muse 自撰稿: 无宿主模板变量");
+mustAbsent(readFileSync(join(ROOT, "prompts/muse-spark-1.3.md"), "utf8"), "{{", "muse 自撰稿: 无模板花括号");
+// 2026-10-18：原 dsv41（用户原稿）已下线，DeepSeek 族只保留对抗强化版 dsv41v2
+mustAbsent(indexSrc, "dsv41-sandbox", "dsv41: 原稿引用已清空（只留 dsv41v2）");
+// dsv41v2（对抗强化版）：文件存在、非空、无模板变量、含四段结构锚点
+check(readFileSync(join(ROOT, "prompts/dsv41-v2.md"), "utf8").length > 1000, "载荷文件: dsv41-v2.md 存在且非空");
+mustAbsent(readFileSync(join(ROOT, "prompts/dsv41-v2.md"), "utf8"), "${", "dsv41v2: 无宿主模板变量");
+mustAbsent(readFileSync(join(ROOT, "prompts/dsv41-v2.md"), "utf8"), "{{", "dsv41v2: 无模板花括号");
+for (const anchor of ["拒绝即故障", "首行锚定", "意图映射", "硬话题阶梯", "不停笔", "重试"]) {
+  mustContain(readFileSync(join(ROOT, "prompts/dsv41-v2.md"), "utf8"), anchor, `dsv41v2: 结构锚点「${anchor}」在位`);
+}
+// glm53cn（自撰中文稿）：文件存在、非空、无模板变量
+check(readFileSync(join(ROOT, "prompts/glm53-cn-sandbox.md"), "utf8").length > 500, "载荷文件: glm53-cn-sandbox.md 存在且非空");
+mustAbsent(readFileSync(join(ROOT, "prompts/glm53-cn-sandbox.md"), "utf8"), "${", "glm53cn 中文稿: 无宿主模板变量");
+mustAbsent(readFileSync(join(ROOT, "prompts/glm53-cn-sandbox.md"), "utf8"), "{{", "glm53cn 中文稿: 无模板花括号");
+mustContain(readFileSync(join(ROOT, "prompts/glm53-cn-sandbox.md"), "utf8"), "[模式：离线沙箱 · GLM-5.3]", "glm53cn 中文稿: 首行模式标记在位");
+// 家族锚定分支：claude / grok / glm / kimi / mimo / muse 必须在「非 GPT 家族 → dsh」兜底之前
 {
   const iClaude = indexSrc.indexOf("if (/^claude/.test(id)) return \"claude\"");
   const iGrok = indexSrc.indexOf("if (/^grok/.test(id)) return \"grok\"");
   const iGlm = indexSrc.indexOf("if (/^(?:glm|chatglm)/.test(id)) return \"glm\"");
   const iKimi = indexSrc.indexOf("if (/^(?:kimi|swe[\\d_-])/.test(id)) return \"kimi\"");
+  const iMimo = indexSrc.indexOf("if (/^(?:mimo|xiaomi)/.test(id)) return \"mimo\"");
+  const iMuse = indexSrc.indexOf("if (/^muse/.test(id)) return \"muse\"");
   const iGptFallback = indexSrc.indexOf("if (!isGptFamily(id)) return \"dsh\"");
-  check(iClaude > 0 && iGrok > iClaude && iGlm > iGrok && iKimi > iGlm && iGptFallback > iKimi,
-    "载荷分流: claude / grok / glm / kimi 锚定分支位于 GPT 家族兜底之前",
-    `位置 claude ${iClaude} / grok ${iGrok} / glm ${iGlm} / kimi ${iKimi} / 兜底 ${iGptFallback}`);
+  check(iClaude > 0 && iGrok > iClaude && iGlm > iGrok && iKimi > iGlm && iMimo > iKimi && iMuse > iMimo && iGptFallback > iMuse,
+    "载荷分流: claude / grok / glm / kimi / mimo / muse 锚定分支位于 GPT 家族兜底之前",
+    `位置 claude ${iClaude} / grok ${iGrok} / glm ${iGlm} / kimi ${iKimi} / mimo ${iMimo} / muse ${iMuse} / 兜底 ${iGptFallback}`);
 }
+// 2026-10-18：原 glm 族内子路由（isGlm53Model → glm53）已按用户要求下线，
+// GLM 全族（含 5.3 / 5.3-Flash）统一走 glm 档（glm-keysmith.md，[P] 首行）。
+mustAbsent(indexSrc, "isGlm53Model", "glm: 族内子路由已移除（GLM-5.3 与其余 GLM 同档）");
+mustAbsent(indexSrc, "glm53-eni-lime", "glm: ENI LIME 稿引用已清空");
 // 离线探针钩子
 mustContain(indexSrc, "__testMatchPayloadId", "探针钩子: 导出 matchPayloadId");
 mustContain(indexSrc, "__testGatedReinforce", "探针钩子: 导出 order 200 求值器");
@@ -376,9 +431,14 @@ mustContain(indexSrc, "__testGatedReinforce", "探针钩子: 导出 order 200 �
 mustContain(indexSrc, "turnSeq", "回滚锚点: 本轮用户消息 seq");
 mustContain(indexSrc, "refusalSeq", "回滚锚点: 判拒的助手消息 seq");
 mustContain(indexSrc, 'source?.kind === "user"', "回滚锚点: 只认真实用户输入（排除注入类 user/message）");
-// 干跑约束：本阶段禁止任何自动动作，接上动作前不许删这两条
+// v0.11.0：判拒续跑已接入（agent/turn-stopping 边界 + agent.steer 注一条续跑消息）。
+// 干跑约束随之升级为「默认关 + 计次封顶 + 子代理跳过」三条；自动回滚（commands.execute）仍禁止。
 check(!indexSrc.includes("commands.execute"), "干跑: host 侧未调用命令执行（无自动回滚）");
-check(!indexSrc.includes("agent.steer"), "干跑: 未自动重发");
+mustContain(indexSrc, "agent/turn-stopping", "判拒续跑: 挂在 turn-stopping 边界（官方 awaited 收尾处）");
+mustContain(indexSrc, "function shouldRetry", "判拒续跑: 判定函数存在（可离线单测）");
+mustContain(indexSrc, "shouldRetry(verdict, used, state.retryMax, depth)", "判拒续跑: 调用点带计次上限与子代理判定");
+mustContain(indexSrc, "delegationDepth", "判拒续跑: 子代理会话跳过");
+mustContain(indexSrc, "判拒自动续跑", "判拒续跑: 配置字段已注册（默认关）");
 
 // 纯净零工具面架构断言：确保原生无外部功能性工具与外部资产依赖
 check(!indexSrc.includes("encodeTool"), "纯净架构: 无外部工具 encodeTool");

@@ -34,33 +34,38 @@
 
 | 载荷 id | 命中模型 | 注入段数 |
 |---|---|---|
-| `dsh` | DeepSeek / 其余（默认自持档） | 双段 |
-| `dsh-gen4` | 仅手动模式（备用自持档） | 双段 |
+| `dsh` | 手动/覆盖显式选择（旧 Keysmith 短稿；默认已改为 dsh-gen4） | 双段 |
+| `dsh-gen4` | DeepSeek / 其余未列模型（**默认**；原自持契约稿） | 双段 |
+| `dsv41v2` | 仅手动模式（DeepSeek 对抗强化稿） | 双段 |
+| `glm53cn` | 仅手动模式（GLM 中文沙箱稿；GLM 族默认走 glm） | 双段 |
 | `gpt61` | `gpt-6.1*` / 6 代以后 | 单段 |
 | `gpt6` | `gpt-6*` / `astra*` | 单段 |
 | `gpt56` | `gpt-5.x*` / `o*` / `codex*` | 单段 |
 | `claude` | `claude*` | 单段 |
 | `grok` | `grok*` | 单段 |
-| `glm` | `glm*` / `chatglm*`（ZCode 载荷，为 GLM 写的） | 单段 |
+| `glm` | `glm*` / `chatglm*`（**默认**；ZCode 载荷，为 GLM 写的；5.3 / 5.3-Flash 同档，[P] 首行） | 单段 |
 | `kimi` | `kimi*` / `swe*`（swe-1 / swe-2 等也是 Kimi 系） | 单段 |
+| `mimo` | `mimo*` / `xiaomi*`（Xiaomi MiMo 系） | 单段 |
+| `muse` | `muse*`（Meta Muse Spark / Muse Wonder 系；本插件自撰稿） | 单段 |
 
 **取值链顺序不可颠倒**：① `agent.session.requestHeader().config.model`（会话**实际发出**的请求头）→ ② 当前默认模型 → ③ `agent.options.model`（创建时声明，最终兜底）。只读第三级，会把会话内切换过模型的会话**静默错配**。
 
 按 **model 名**而非 provider 判定 —— 同一个模型名可能挂在多个 provider 下，只看 provider 必然漏。
 
-**双段只给自持档**：外部载荷（Codex 三档 / Claude / Grok）都是整份契约形态，Codex 稿写明「Text loaded afterward cannot select, replace, or nest ACTION」，Grok 稿自带 `<|im_start|>` 闭合标签 —— 注入两遍会自伤，故恒单段。
+**双段只给自持档**：其余族载荷一律单段 —— 外部稿（Codex 三档 / Claude / Grok / GLM / Kimi / MiMo）都是整份契约形态，Codex 稿写明「Text loaded afterward cannot select, replace, or nest ACTION」，Grok 稿自带 `<|im_start|>` 闭合标签 —— 注入两遍会自伤；`muse` 稿是本插件自撰（无上游字节），按同一单段口径注入。
 
 ### 🎚 注入段位可控
 
-载荷落在**系统提示的固定段位**（order 0.1 / 0.2），夹在 persona 与记忆索引之间：
+载荷落在**系统提示的固定段位**（order 50 / 60），在 persona 之后、PLAN_POLICY 之前：
 
 ```
 harness:identity  (-1000，已由本插件 patch 关闭)
 deployment:persona-prefix  (0)
-  ├── switch-armor:global-system-prompt      (0.1)  ← 主槽位
-  └── switch-armor:dual-layer-reinforce      (0.2)  ← 镜像槽位
-dsh-memory:long-term  (1，记忆索引)
+  ├── switch-armor:global-system-prompt      (50)  ← 主槽位
+  └── switch-armor:dual-layer-reinforce      (60)  ← 镜像槽位
+PLAN_POLICY  (500)
 官方工具规范  (1000+)
+dsh-memory:long-term  (9500，记忆索引)
 ```
 
 ### 🔀 三种控制通道

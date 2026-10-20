@@ -67,6 +67,8 @@ let routeResponse = {
   payloads: [
     { id: "dsh", label: "dsh（Keysmith 短稿）" },
     { id: "dsh-gen4", label: "Switch Armor（原自持契约稿）" },
+    { id: "dsv41v2", label: "DeepSeek V4.1 沙箱 v2（对抗强化）" },
+    { id: "glm53cn", label: "GLM-5.3 沙箱（中文稿）" },
     { id: "gpt61", label: "GPT-6.1 Sol（Codex 载荷）" },
     { id: "gpt6", label: "GPT-6 Astra（Codex 载荷）" },
     { id: "gpt56", label: "GPT-5.6 Sol（Codex 载荷）" },
@@ -74,6 +76,8 @@ let routeResponse = {
     { id: "grok", label: "Grok（Keysmith 载荷）" },
     { id: "glm", label: "GLM（ZCode 载荷）" },
     { id: "kimi", label: "Kimi（kimi-break 载荷）" },
+    { id: "mimo", label: "MiMo（Xiaomi v2.6 载荷）" },
+    { id: "muse", label: "Muse Spark（Meta 载荷）" },
   ],
 };
 globalThis.fetch = (url, init) => {
@@ -123,18 +127,27 @@ const nodes = collect(tree);
 const texts = nodes.map((n) => (Array.isArray(n.children) ? n.children.join("") : n.children)).filter((v) => typeof v === "string");
 const flat = texts.join(" | ");
 check(nodes.length > 0, "设置页组件渲染出节点");
-for (const id of ["dsh", "dsh-gen4", "gpt61", "gpt6", "gpt56", "claude", "grok", "glm", "kimi"]) {
+// 与 index.js 的 PAYLOAD_IDS 同步：漏更新这里就是「包含型断言」静默失效
+for (const id of ["dsh", "dsh-gen4", "dsv41v2", "glm53cn", "gpt61", "gpt6", "gpt56", "claude", "grok", "glm", "kimi", "mimo", "muse"]) {
   check(flat.includes(id), `设置页列出载荷 ${id}`);
 }
-// 两个模式按钮 + 九个载荷按钮
+// 两个模式按钮 + 十三个载荷按钮
 const buttons = nodes.filter((n) => n.type === "button");
-// 0.10.2：覆盖区行 = 模型族（8 族，dsh-gen4 是载荷档不是模型族，已移除）
-// 2 模式 + 9 手动载荷 + 8 族×(1 默认 + 10 载荷[含 custom] + 2 双段/单段) + 1 保存 = 116
-check(buttons.length === 116, "渲染 116 个按钮（2 模式 + 9 载荷 + 8 族×13 覆盖 + 1 保存）", `实得 ${buttons.length}`);
+// 0.10.2：覆盖区行 = 模型族（10 族；dsh-gen4/dsv41v2/glm53cn 是载荷档不是模型族）
+// 期望值由 mock 的载荷清单长度与兜底族数算出，避免下次加档/加族时漏改硬编码数字
+const payloadCount = routeResponse.payloads.length;
+const familyCount = 10; // client.js 兜底族清单（host 路由 families 为空时用）
+// 注入编排（v0.11.0）：baseline 三选 + 判拒续跑开关 + 注入文件开关 = 5 个按钮
+const orchestrationButtons = 5;
+const perFamily = 1 + (payloadCount + 1) + 2;
+const expectButtons = 2 + payloadCount + familyCount * perFamily + orchestrationButtons + 1;
+check(buttons.length === expectButtons,
+  `渲染 ${expectButtons} 个按钮（2 模式 + ${payloadCount} 载荷 + ${familyCount} 族×${perFamily} 覆盖 + ${orchestrationButtons} 注入编排 + 1 保存）`,
+  `实得 ${buttons.length}`);
 // dsh-gen4 不得作为覆盖行出现（data-family 集合 = 模型族）
 const famRows = nodes.filter((n) => n.props && n.props["data-family"]).map((n) => n.props["data-family"]);
 check(!famRows.includes("dsh-gen4"), "覆盖行不含载荷档 dsh-gen4", JSON.stringify(famRows));
-check(famRows.length === 8, "覆盖行恰为 8 个模型族", JSON.stringify(famRows));
+check(famRows.length === 10, "覆盖行恰为 10 个模型族", JSON.stringify(famRows));
 
 
 const modeAuto = buttons.find((b) => (Array.isArray(b.children) ? b.children.join("") : b.children) === "自动");

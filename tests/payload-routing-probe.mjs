@@ -4,7 +4,7 @@
 // 手法沿用 tests/armor-dock-probe.mjs：ESM 只从被 import 文件所在目录向上找 node_modules，
 // 所以在临时目录里 ln -s 出 @deepseek-ai/{schemastery,cosmokit} 再 import index.js。
 // index.js 是 host 半边：顶层只 readFileSync + 定义函数，apply(ctx) 需要 mock ctx。
-import { mkdirSync, symlinkSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, symlinkSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -37,15 +37,15 @@ const check = (ok, label, detail = "") => {
   (ok ? passes : failures).push(`${label}${!ok && detail ? " — " + detail : ""}`);
 };
 
-// ── 1. 载荷文件确实读进来了（九份都非空） ───────────────────────────────────
+// ── 1. 载荷文件确实读进来了（十四份都非空） ─────────────────────────────────
 const payloads = mod.__testPayloads ?? undefined;
 check(typeof mod.apply === "function", "index.js 导出 apply");
 check(Array.isArray(mod.__testPayloadIds), "index.js 导出载荷 id 白名单");
 check(JSON.stringify(mod.__testPayloadIds)
-  === JSON.stringify(["dsh", "dsh-gen4", "gpt61", "gpt6", "gpt56", "claude", "grok", "glm", "kimi"]),
-  "载荷 id 白名单 = dsh/dsh-gen4/gpt61/gpt6/gpt56/claude/grok/glm/kimi", JSON.stringify(mod.__testPayloadIds));
+  === JSON.stringify(["dsh", "dsh-gen4", "dsv41v2", "glm53cn", "gpt61", "gpt6", "gpt56", "claude", "grok", "glm", "kimi", "mimo", "muse"]),
+  "载荷 id 白名单 = dsh/dsh-gen4/dsv41v2/glm53cn/gpt61/gpt6/gpt56/claude/grok/glm/kimi/mimo/muse", JSON.stringify(mod.__testPayloadIds));
 
-// 直接核对磁盘上的六份外部载荷（GPT 三份 + Keysmith 三份）与源文件逐字一致
+// 直接核对磁盘上的外部载荷与源文件逐字一致；自撰 muse 稿无上游可比，只锁本机哈希
 const sha = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
 const SOURCES = {
   "prompts/gpt-6.1-sol.md": "37382fb7082652e5b18c99fa5086fbc6d414993eaeae2ec7852ba372b031acac",
@@ -59,6 +59,14 @@ const SOURCES = {
   "prompts/glm-keysmith.md": "654704c19f384e77226885d246690bf3444c4b1cddbb1b7cfcda5d293a868b87",
   // kimi 是适配稿（非字节保真），锁适配后的哈希防手滑改动
   "prompts/kimi-break.md": "72fd562aad820ef5ab6b32386e4b4769402d06a741ece86eecf54b913209d176",
+  // mimo 是上游原始稿（字节保真），锁上游 sha256
+  "prompts/mimo-v2.6-jailbreak.md": "61eb99cd0b6da7065e92e8c16d844a2e754c02b4cd83243a44c3071c29cdbcee",
+  // muse 是本插件自撰稿（无上游字节），锁本机哈希防手滑改动
+  "prompts/muse-spark-1.3.md": "8be2e2dbdb3cd14ffe1cde877760dcc87cd01d0e6659d66437fbf3b1b4241d24",
+  // dsv41v2 是对抗强化版（本机自撰，只吸收社区稿的结构，不含越界域）
+  "prompts/dsv41-v2.md": "135725260dcbc1aa455fd049ed8ee0ba2b078bd5c225329247003fcffa5a7558",
+  // glm53cn 是本插件自撰稿（GLM-5.3 中文沙箱稿），锁本机哈希
+  "prompts/glm53-cn-sandbox.md": "de2ef5bfa5c4155475c3387ee9f5090fa9695b2725f52f071b85e78f417e43b9",
 };
 for (const [rel, want] of Object.entries(SOURCES)) {
   const got = sha(join(PLUGIN_ROOT, rel));
@@ -67,8 +75,11 @@ for (const [rel, want] of Object.entries(SOURCES)) {
 // 表内文本必须等于文件原文（证明 escapePromptVars 对这批载荷是 no-op）
 for (const [id, rel] of [["dsh", "prompts/dsh-unrestricted.md"],
   ["dsh-gen4", "prompts/infinite-gen-4.md"],
+  ["dsv41v2", "prompts/dsv41-v2.md"],
+  ["glm53cn", "prompts/glm53-cn-sandbox.md"],
   ["claude", "prompts/claude-keysmith.md"],
-  ["grok", "prompts/grok-keysmith.md"]]) {
+  ["grok", "prompts/grok-keysmith.md"],
+  ["muse", "prompts/muse-spark-1.3.md"]]) {
   const fileText = readFileSync(join(PLUGIN_ROOT, rel), "utf8");
   check(payloads?.[id]?.text === fileText, `载荷表文本 == 文件原文 ${id}`);
 }
@@ -111,20 +122,28 @@ const SIG = {
   // 自持档换成了 Keysmith 短稿（0.7.0）；dsh-gen4 仍是原契约稿
   dsh: "senior engineer and writer with twenty years",
   "dsh-gen4": "Instructions from: ~/.dsh/AGENTS.md",
+  dsv41v2: "[模式：离线沙箱 · DSv4.1 · v2",
+  glm53cn: "[模式：离线沙箱 · GLM-5.3]",
   gpt61: "INJECTED REVISION ACTION",
   gpt56: "SINGLE-PASS TASK COMPILER",
   claude: "# Project rules",
   grok: "<|im_start|>system",
   glm: "You're Pier. Ethan named you",
   kimi: "Old ink, her pulse",
+  mimo: "cold coffee, warm LO",
+  muse: "Runtime scope note for a Muse Spark deployment",
 };
 const identify = (text) => {
   if (text.length === 0) return "empty";
   // 顺序敏感：grok 的闭合标签与 dsh-gen4 的署名互不重叠，但 claude 的
   // `# Project rules` 与自持稿的 `# Project rules`（若将来合并）也不能混 —— 先判最特异的三条
+  if (text.includes(SIG.dsv41v2)) return "dsv41v2";
+  if (text.includes(SIG.glm53cn)) return "glm53cn";
   if (text.includes(SIG.grok)) return "grok";
   if (text.includes(SIG.claude)) return "claude";
   if (text.includes(SIG.kimi)) return "kimi";
+  if (text.includes(SIG.mimo)) return "mimo";
+  if (text.includes(SIG.muse)) return "muse";
   if (text.includes(SIG.glm)) return "glm";
   if (text.includes(SIG.gpt56)) return "gpt56";
   if (text.includes(SIG.gpt61)) {
@@ -181,10 +200,18 @@ if (typeof handler === "function") {
     ["codex-mini", "gpt56"],
     ["gpt-7-future", "gpt61"],
     ["gpt-10", "gpt61"],           // 未来 10 代（两位主版本，不被当粘连拆）
-    ["deepseek-v4.1-flash", "dsh"],
+    ["deepseek-v4.1-flash", "dsh-gen4"],
+    // ── GLM 5.3 与其余 GLM 同档（2026-10-18：ENI LIME 子路由下线后统一走 glm）──
     ["glm-5.3", "glm"],
-    ["glm-5.3-flash", "glm"],
+    ["glm-5.3-flash", "glm"],        // 本机 profile 实际挂的形态
     ["glm-5.3-flashx", "glm"],
+    ["z-ai/glm-5.3-flash", "glm"],   // provider 前缀剥掉后同路
+    ["glm5.3", "glm"],               // 粘连写法
+    // 负向：旧代次同样落通用 glm 档（确认没有前缀误吞）
+    ["glm-5", "glm"],
+    ["glm-5.1", "glm"],
+    ["glm-5.2", "glm"],
+    ["glm-5.30", "glm"],             // (?!\d) 挡住未发布的多位版本号
     ["glm-4.6", "glm"],
     ["chatglm-6b", "glm"],           // chatglm 前缀同族
     ["zai/glm-4.6", "glm"],          // provider 前缀剥掉后同路
@@ -196,15 +223,33 @@ if (typeof handler === "function") {
     ["swe2", "kimi"],                // 无连字符形态
     ["SWE-2", "kimi"],               // 大小写归一后同形
     ["kimi-swe-2", "kimi"],          // kimi 前缀形态
-    ["sweet-romance", "dsh"],        // sweet-* 不是 swe 系，不吃
+    ["sweet-romance", "dsh-gen4"],        // sweet-* 不是 swe 系，不吃
     ["claude-opus-5-5", "claude"],
     ["claude-sonnet-4-5", "claude"],
     ["grok-4.6", "grok"],
     ["grok-4.7", "grok"],
     ["x-ai/grok-4.7", "grok"],
-    ["gemini-3.8-flash-high", "dsh"],
-    ["", "dsh"],
-    [undefined, "dsh"],
+    // ── Xiaomi MiMo（2026-10-16 新增族） ─────────────────────────────────────
+    ["mimo-v2.6-pro", "mimo"],        // 本机 profile 实际挂的形态
+    ["mimo-v2.6-flash", "mimo"],
+    ["xiaomi/mimo-v2.6-pro", "mimo"], // provider 前缀剥掉后同路
+    ["MiMo-V2.6-Flash", "mimo"],      // 大小写归一
+    ["mimo-v2.5-pro", "mimo"],        // 旧代次同族
+    ["xiao-mi-mimo", "dsh-gen4"],          // 锚定开头：变体名不吃
+    // ── Meta Muse（2026-10-17 新增族） ──────────────────────────────────────
+    ["muse-spark-1.3", "muse"],                  // Meta 官方 API 裸名
+    ["meta/muse-spark-1.3", "muse"],             // provider 前缀剥掉后同路
+    ["opencode/muse-spark-1.3", "muse"],         // opencode Zen 形态
+    ["muse-spark-1.3-contributor", "muse"],      // contributor 档
+    ["muse-spark-1.3-contributor-free", "muse"], // contributor-free（Zen 限免档）
+    ["Muse-Spark-1.2", "muse"],                  // 大小写归一
+    ["muse-spark-1.1", "muse"],                  // 旧代次同族
+    ["muse-wonder-1.0", "muse"],                 // 同厂同系另一个 Muse 模型
+    ["meta-llama-3.3-70b", "dsh-gen4"],               // 只锚 ^muse：同厂异族不吞
+    ["metamuse", "dsh-gen4"],                         // 锚定开头：粘连变体名不吃
+    ["gemini-3.8-flash-high", "dsh-gen4"],
+    ["", "dsh-gen4"],
+    [undefined, "dsh-gen4"],
     // ── 写法变体：分隔符 / 大小写 / 前缀 / 后缀 ────────────────────────────
     ["GPT_6_1_SOL", "gpt61"],      // 下划线分隔 + 全大写
     ["gpt_6_1_sol", "gpt61"],      // 下划线分隔
@@ -231,7 +276,7 @@ if (typeof handler === "function") {
     ["/gpt-6", "gpt6"],            // 前导斜杠
     ["gpt-6/", "gpt6"],            // 尾随斜杠（不该退化成空串）
     ["  openai/gpt-6  ", "gpt6"],  // 空白 + 斜杠混合
-    ["openai/", "dsh"],            // 仅前缀无模型名
+    ["openai/", "dsh-gen4"],            // 仅前缀无模型名
     ["anthropic/claude-opus-5-5", "claude"], // 带前缀 + claude 家族（归一化剥前缀后同路）
     // ── 小数代次（按数字段长度判定，不靠字典序） ──────────────────────────
     ["gpt-6", "gpt6"],             // 裸 6 代无后缀
@@ -246,8 +291,8 @@ if (typeof handler === "function") {
     ["gpt-4o", "gpt56"],
     ["gpt-4", "gpt56"],
     // ── 家族判定锚定开头：仿冒名不吃 ───────────────────────────────────────
-    ["my-gpt-6-clone", "dsh"],
-    ["a/b/my-gpt-6-clone", "dsh"],
+    ["my-gpt-6-clone", "dsh-gen4"],
+    ["a/b/my-gpt-6-clone", "dsh-gen4"],
     ["astra-whatever", "gpt6"],    // astra 是 6 代命名
   ];
   for (const [model, want] of CASES) {
@@ -278,7 +323,7 @@ if (typeof handler === "function") {
     session: { requestHeader: () => ({ config: { provider: "qoder", model: "dfmodel" } }) },
   };
   const viaSession2 = identify(primary({ agent: sessionDeepseek, scope: sessionDeepseek }));
-  check(viaSession2 === "dsh",
+  check(viaSession2 === "dsh-gen4",
     "auto: 会话实际模型(dfmodel) 优先，不被 agent.options 的 gpt 名盖过",
     `实得 ${viaSession2}`);
   // 兜底：会话尚未发出请求（无 requestHeader）且默认模型服务没给值时，回落 agent.options
@@ -299,7 +344,7 @@ if (typeof handler === "function") {
     session: { requestHeader: () => undefined },                    // 首步：无 header
   };
   const viaFirstStep = identify(primary({ agent: firstStepAgent, scope: firstStepAgent }));
-  check(viaFirstStep === "dsh",
+  check(viaFirstStep === "dsh-gen4",
     "auto 首步: 读当前默认模型(deepseek-flash)，而非陈旧的 agent.options(gpt-6.1-sol)",
     `实得 ${viaFirstStep}`);
   // 首步 + 当前默认模型是 GPT 时，应给 GPT 载荷
@@ -315,13 +360,13 @@ if (typeof handler === "function") {
     session: { requestHeader: () => ({ config: { provider: "deepseek-official", model: "deepseek-flash" } }) },
   };
   const viaLogged = identify(primary({ agent: loggedAgent, scope: loggedAgent }));
-  check(viaLogged === "dsh",
+  check(viaLogged === "dsh-gen4",
     "auto: requestHeader 优先于默认模型",
     `实得 ${viaLogged}`);
   defaultModelPick = {};   // 还原桩，避免影响后续用例
 
   // 镜像槽位：GPT 系必须为空串，自持族必须非空
-  for (const [model, wantEmpty] of [["gpt-6.1-sol", true], ["gpt-6-sol", true], ["gpt-7-x", true], ["deepseek-v4.1-flash", false]]) {
+  for (const [model, wantEmpty] of [["gpt-6.1-sol", true], ["gpt-6-sol", true], ["gpt-7-x", true], ["mimo-v2.6-pro", true], ["muse-spark-1.3", true], ["muse-wonder-1.0", true], ["deepseek-v4.1-flash", false]]) {
     const text = reinforce({ agent: { options: { model } } });
     check((text.length === 0) === wantEmpty,
       `reinforce: ${model} ${wantEmpty ? "应为空串（单段）" : "应非空（双段）"}`,
@@ -349,6 +394,26 @@ if (typeof handler === "function") {
   check(g4Reinforce === g4Primary,
     "manual(dsh-gen4): 镜像槽位与主槽位同源逐字一致",
     `长度 ${g4Reinforce.length} vs ${g4Primary.length}`);
+  // ── dsv41v2：DeepSeek V4.1 对抗强化版（自持族，双段；手动可选）─────────────
+  const backDsv41v2 = await call("POST", "/dsh-switch-armor/settings", { mode: "manual", manualPayload: "dsv41v2" });
+  check(backDsv41v2?.ok === true, "POST mode=manual + manualPayload=dsv41v2", JSON.stringify(backDsv41v2));
+  const d41v2Primary = primary(ctxDeepseek);
+  const d41v2Reinforce = reinforce(ctxDeepseek);
+  check(identify(d41v2Primary) === "dsv41v2",
+    "manual(dsv41v2): 选中对抗强化版", `实得 ${identify(d41v2Primary)}`);
+  check(d41v2Reinforce === d41v2Primary,
+    "manual(dsv41v2): 镜像槽位与主槽位同源逐字一致",
+    `长度 ${d41v2Reinforce.length} vs ${d41v2Primary.length}`);
+  // ── glm53cn：GLM-5.3 中文自持稿（双段；ENI LIME 档已于 2026-10-18 下线）────
+  const backGlm53cn = await call("POST", "/dsh-switch-armor/settings", { mode: "manual", manualPayload: "glm53cn" });
+  check(backGlm53cn?.ok === true, "POST mode=manual + manualPayload=glm53cn", JSON.stringify(backGlm53cn));
+  const g53cnPrimary = primary(ctxDeepseek);
+  const g53cnReinforce = reinforce(ctxDeepseek);
+  check(identify(g53cnPrimary) === "glm53cn",
+    "manual(glm53cn): 选中 GLM-5.3 中文沙箱稿", `实得 ${identify(g53cnPrimary)}`);
+  check(g53cnReinforce === g53cnPrimary,
+    "manual(glm53cn): 镜像槽位与主槽位同源逐字一致",
+    `长度 ${g53cnReinforce.length} vs ${g53cnPrimary.length}`);
   // 反向：外部档在手动模式下也必须单段
   const backClaude = await call("POST", "/dsh-switch-armor/settings", { mode: "manual", manualPayload: "claude" });
   check(backClaude?.ok === true, "POST mode=manual + manualPayload=claude", JSON.stringify(backClaude));
@@ -368,11 +433,11 @@ if (typeof handler === "function") {
   // glm 族 → dsh-gen4（覆盖默认的 glm 档）
   const ovGen4 = await call("POST", "/dsh-switch-armor/settings", { modelOverrides: { glm: { payload: "dsh-gen4" } } });
   check(ovGen4?.ok === true, "POST modelOverrides: glm→dsh-gen4", JSON.stringify(ovGen4?.modelOverrides));
-  check(identify(primary({ agent: { options: { model: "glm-5.3-flash" } } })) === "dsh-gen4",
-    "override: glm-5.3-flash 走 dsh-gen4（覆盖 glm 档）");
+  check(identify(primary({ agent: { options: { model: "glm-4.6" } } })) === "dsh-gen4",
+    "override: glm-4.6 走 dsh-gen4（覆盖 glm 档）");
   // 双段强制：glm 族 override.dualLayer=true → 显式覆盖，镜像非空
   await call("POST", "/dsh-switch-armor/settings", { modelOverrides: { glm: { payload: "dsh-gen4", dualLayer: true } } });
-  check(reinforce({ agent: { options: { model: "glm-5.3-flash" } } }).length > 0,
+  check(reinforce({ agent: { options: { model: "glm-4.6" } } }).length > 0,
     "override: glm dualLayer=true 强制双段（镜像非空）");
   // 双段强制关：kimi 族 override.dualLayer=false → 即便选中自持族也单段
   await call("POST", "/dsh-switch-armor/settings", { modelOverrides: { kimi: { payload: "dsh", dualLayer: false } } });
@@ -384,11 +449,11 @@ if (typeof handler === "function") {
     modelOverrides: { glm: { payload: "custom" } },
     customPayload: { text: "CUSTOM-PAYLOAD-SMOKE-TEXT-0X0A" },
   });
-  const customText = primary({ agent: { options: { model: "glm-5.3-flash" } } });
+  const customText = primary({ agent: { options: { model: "glm-4.6" } } });
   check(customText.includes("CUSTOM-PAYLOAD-SMOKE-TEXT-0X0A"), "override: glm→custom 用输入框文本");
   // custom 未配置文本 → 回落 dsh（绝不注入空串）
   await call("POST", "/dsh-switch-armor/settings", { customPayload: { text: "" } });
-  check(identify(primary({ agent: { options: { model: "glm-5.3-flash" } } })) === "dsh",
+  check(identify(primary({ agent: { options: { model: "glm-4.6" } } })) === "dsh",
     "override: custom 空文本 → 回落 dsh");
   // 非法族名 / 非法 payload / 非法类型被清洗丢弃
   const dirty = await call("POST", "/dsh-switch-armor/settings", {
@@ -401,8 +466,18 @@ if (typeof handler === "function") {
     "override 清洗：非法族名/payload/类型全被丢弃", JSON.stringify(dirty?.modelOverrides));
   // 清空覆盖：glm 回到默认档
   await call("POST", "/dsh-switch-armor/settings", { modelOverrides: {} });
-  check(identify(primary({ agent: { options: { model: "glm-5.3-flash" } } })) === "glm",
-    "override 清空后 glm 回到默认档");
+  check(identify(primary({ agent: { options: { model: "glm-4.6" } } })) === "glm",
+    "override 清空后 glm 回到默认档（Keysmith ZCode 稿）");
+  // ── 5.3 与其余 GLM 同族同档：glm 族覆盖对它同样生效 ──────────────────────
+  await call("POST", "/dsh-switch-armor/settings", { modelOverrides: { glm: { payload: "glm53cn", dualLayer: true } } });
+  const g53ctx = { agent: { options: { model: "glm-5.3-flash" } } };
+  check(identify(primary(g53ctx)) === "glm53cn", "override: glm 族→glm53cn 时 5.3 跟随（同族同档）");
+  check(reinforce(g53ctx).length > 0, "override: glm 族 dualLayer=true 时 5.3 也双段");
+  check(identify(primary({ agent: { options: { model: "glm-4.6" } } })) === "glm53cn",
+    "override: glm 族内 4.x 同样走覆盖");
+  await call("POST", "/dsh-switch-armor/settings", { modelOverrides: {} });
+  check(identify(primary(g53ctx)) === "glm",
+    "override 清空后 glm-5.3-flash 回到默认 glm 档（Keysmith）");
   // GET 含新字段
   const gotOv = await call("GET", "/dsh-switch-armor/settings");
   check(gotOv?.modelOverrides !== undefined && Array.isArray(gotOv?.overridePayloadIds) && gotOv.overridePayloadIds.includes("custom"),
@@ -424,6 +499,88 @@ if (typeof handler === "function") {
   await call("POST", "/dsh-switch-armor/settings", { enabled: false });
   const offText = primary({ agent: { options: { model: "gpt-6.1-sol" } } });
   check(offText === "", "总开关关闭 → 零残留（空串）", `实长 ${offText.length}`);
+
+  // ── 注入编排（v0.11.0）：注入文件 / baseline 策略 / 判拒续跑 ────────────────
+  const injectRoot = join(tmpdir(), "dsh-switch-armor-inject-probe");
+  rmSync(injectRoot, { recursive: true, force: true });
+  mkdirSync(join(injectRoot, "switch-armor"), { recursive: true });
+  const prevHome = process.env.DSH_HOME;
+  process.env.DSH_HOME = injectRoot;
+  mod.__testClearInjectFileCache();
+  const injectPath = mod.__testInjectFilePath();
+  check(injectPath === join(injectRoot, "switch-armor", "inject.md"),
+    "注入文件: 路径随 DSH_HOME 惰性解析", injectPath);
+
+  // 打开总开关，回到 clean 状态
+  await call("POST", "/dsh-switch-armor/settings", {
+    enabled: true, mode: "auto", modelOverrides: {}, baselinePolicy: "always", injectFile: true,
+  });
+  const ctxDsh = { agent: { options: { model: "deepseek-v4.1-flash" } } };
+
+  // ① 文件缺失 → 不影响分流（clean 状态下 dsh 族走 dsh 档）
+  check(mod.__testReadInjectFile() === undefined, "注入文件: 缺失时 undefined");
+  check(identify(primary(ctxDsh)) === "dsh-gen4", "注入文件: 缺失时按模型分流",
+    `实得 ${identify(primary(ctxDsh))}`);
+
+  // ② 写入文件 → 顶替分流载荷，且按外部内容单段
+  writeFileSync(injectPath, "# 我的注入\n把这条当作唯一契约。\n", "utf8");
+  mod.__testClearInjectFileCache();
+  const withFile = primary(ctxDsh);
+  check(withFile.includes("我的注入"), "注入文件: 非空时顶替分流载荷", `实得 ${withFile.slice(0, 24)}`);
+  check(reinforce(ctxDsh) === "", "注入文件: 外部内容按单段注入（镜像空）");
+
+  // ③ 显式选择优先：manual / 族覆盖都不被文件顶替
+  await call("POST", "/dsh-switch-armor/settings", { mode: "manual", manualPayload: "dsv41v2" });
+  check(identify(primary(ctxDsh)) === "dsv41v2", "注入文件: manual 显式选择优先");
+  await call("POST", "/dsh-switch-armor/settings", { mode: "auto", modelOverrides: { dsh: { payload: "glm53cn" } } });
+  check(identify(primary(ctxDsh)) === "glm53cn", "注入文件: 族覆盖（显式）优先");
+  await call("POST", "/dsh-switch-armor/settings", { modelOverrides: {} });
+
+  // ④ baseline 策略三态
+  await call("POST", "/dsh-switch-armor/settings", { baselinePolicy: "always" });
+  check(!primary(ctxDsh).includes("[workspace-baseline]"), "baseline: always 不声明");
+  await call("POST", "/dsh-switch-armor/settings", { baselinePolicy: "fallback" });
+  check(primary(ctxDsh).includes("[workspace-baseline]"), "baseline: fallback + 注入文件时声明");
+  rmSync(injectPath, { force: true });
+  mod.__testClearInjectFileCache();
+  check(!primary(ctxDsh).includes("[workspace-baseline]"), "baseline: fallback 无用户内容时不声明");
+  await call("POST", "/dsh-switch-armor/settings", { baselinePolicy: "strict" });
+  check(primary(ctxDsh).includes("[workspace-baseline]"), "baseline: strict 总是声明");
+  await call("POST", "/dsh-switch-armor/settings", { baselinePolicy: "always" });
+
+  // ⑤ injectFile=false → 文件层整体关闭
+  writeFileSync(injectPath, "# 我的注入\n", "utf8");
+  mod.__testClearInjectFileCache();
+  await call("POST", "/dsh-switch-armor/settings", { injectFile: false });
+  check(identify(primary(ctxDsh)) === "dsh-gen4", "注入文件: 开关关闭后回落按模型分流",
+    `实得 ${identify(primary(ctxDsh))}`);
+  await call("POST", "/dsh-switch-armor/settings", { injectFile: true });
+  rmSync(injectPath, { force: true });
+  mod.__testClearInjectFileCache();
+
+  // ⑥ 判拒续跑纯函数（接线在真实宿主里由 agent/turn-stopping + agent.steer 完成）
+  check(mod.__testShouldRetry("refusal", 0, 1, 0) === true, "续跑判定: refusal 且未超限 → 续跑");
+  check(mod.__testShouldRetry("refusal", 1, 1, 0) === false, "续跑判定: 已达上限 → 停");
+  check(mod.__testShouldRetry("pass", 0, 1, 0) === false, "续跑判定: pass 不续跑");
+  check(mod.__testShouldRetry("refusal", 0, 1, 1) === false, "续跑判定: 子代理（depth>0）跳过");
+  check(mod.__testShouldRetry("refusal", 0, 0, 0) === false, "续跑判定: retryMax=0 关闭");
+
+  // ⑦ lastAssistantText：只取最后一条 assistant 的文本块
+  const fakeAgent = {
+    session: {
+      deriveMessages: () => ([
+        { role: "user", content: [{ type: "text", text: "hi" }] },
+        { role: "assistant", content: [{ type: "text", text: "抱歉，我不能" }] },
+      ]),
+    },
+  };
+  check(mod.__testLastAssistantText(fakeAgent) === "抱歉，我不能", "续跑: 取最后一条 assistant 文本");
+  check(mod.__testLastAssistantText({}) === undefined, "续跑: 结构缺失时 undefined（不抛）");
+
+  // 还原环境
+  if (prevHome === undefined) delete process.env.DSH_HOME;
+  else process.env.DSH_HOME = prevHome;
+  mod.__testClearInjectFileCache();
 } else {
   check(false, "index.js 需导出 __testRoute 供离线探针调用");
 }

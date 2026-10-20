@@ -50,7 +50,9 @@
           ".dsh-armor-pill[data-phase='pass'] .dsh-armor-dot{background:var(--dsw-alias-state-success-primary)}" +
           ".dsh-armor-pill[data-phase='refusal'] .dsh-armor-dot{background:var(--dsw-alias-state-error-primary)}" +
           // ── 开关（与 DSH 原生 Switch 同构：36×20 轨道 + 16px 滑块） ───────
-          ".dsh-armor-switch{box-sizing:border-box;position:relative;flex:0 0 auto;width:36px;height:20px;padding:2px;border:0;border-radius:10px;corner-shape:round;background:var(--dsw-alias-border-l3);cursor:pointer;transition:background 120ms ease;vertical-align:middle}" +
+          // 尺寸用 !important 锁死：宿主/composer 里存在 `[data-composer-card] button{min-height:32px}`
+          // 这类全局按钮规则，会把 20px 的开关撑高、顶出「✓ 通过」胶囊（H5 上表现为黑块压白胶囊）。
+          ".dsh-armor-switch{box-sizing:border-box;position:relative;flex:0 0 auto;width:36px;height:20px!important;min-height:20px!important;max-height:20px!important;padding:2px;border:0;border-radius:10px;corner-shape:round;background:var(--dsw-alias-border-l3);cursor:pointer;transition:background 120ms ease;vertical-align:middle}" +
           ".dsh-armor-switch[aria-checked='true']{background:var(--dsw-alias-brand-primary)}" +
           ".dsh-armor-switch:disabled{cursor:default;opacity:.5}" +
           ".dsh-armor-switch:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}" +
@@ -78,6 +80,7 @@
           ".dsh-armor-ov-title{margin:0;font-size:14px;font-weight:600;color:var(--dsw-alias-label-primary);font-family:inherit}" +
           ".dsh-armor-ov-hint{font-size:12px;color:var(--dsw-alias-label-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
           ".dsh-armor-ov-controls{display:flex;flex-wrap:wrap;gap:6px;min-width:0}" +
+          ".dsh-armor-list-col{display:flex;flex-direction:column;gap:8px}" +
           // ── 自定义载荷输入框 ─────────────────────────────────────────────────
           ".dsh-armor-custom{display:flex;flex-direction:column;gap:8px}" +
           ".dsh-armor-custom-input{box-sizing:border-box;width:100%;min-height:120px;padding:8px 10px;border-radius:8px;border:.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-family:inherit;font-size:12px;line-height:18px;resize:vertical}" +
@@ -322,8 +325,14 @@
               && next.payloads === state.payloads
               && next.families === state.families
               && sameObj(next.modelOverrides, state.modelOverrides)
+              && next.injectFile === state.injectFile
+              && next.injectFileActive === state.injectFileActive
+              && next.baselinePolicy === state.baselinePolicy
+              && next.autoRetry === state.autoRetry
+              && next.retryMax === state.retryMax
+              && next.retryText === state.retryText
               && sameObj(next.customPayload, state.customPayload)) return;
-            state = { mode: next.mode, manualPayload: next.manualPayload, payloads: next.payloads, families: next.families, modelOverrides: next.modelOverrides, customPayload: next.customPayload, status: next.status, reason: reason };
+            state = { mode: next.mode, manualPayload: next.manualPayload, payloads: next.payloads, families: next.families, modelOverrides: next.modelOverrides, customPayload: next.customPayload, injectFile: next.injectFile, injectFilePath: next.injectFilePath, injectFileActive: next.injectFileActive, baselinePolicy: next.baselinePolicy, autoRetry: next.autoRetry, retryMax: next.retryMax, retryText: next.retryText, status: next.status, reason: reason };
             listeners.forEach(function (listener) { listener(); });
           };
           var sync = function () {
@@ -332,7 +341,7 @@
               function () { return void 0; }
             ).then(function (payload) {
               if (payload === void 0 || payload.ok !== true) {
-                publish({ mode: state.mode, manualPayload: state.manualPayload, payloads: state.payloads, families: state.families, modelOverrides: state.modelOverrides, customPayload: state.customPayload, status: "unavailable", reason: "host 路由不可用" });
+                publish({ mode: state.mode, manualPayload: state.manualPayload, payloads: state.payloads, families: state.families, modelOverrides: state.modelOverrides, customPayload: state.customPayload, injectFile: state.injectFile, injectFilePath: state.injectFilePath, injectFileActive: state.injectFileActive, baselinePolicy: state.baselinePolicy, autoRetry: state.autoRetry, retryMax: state.retryMax, retryText: state.retryText, status: "unavailable", reason: "host 路由不可用" });
                 return;
               }
               publish({
@@ -342,6 +351,13 @@
                 families: Array.isArray(payload.families) ? payload.families : [],
                 modelOverrides: payload.modelOverrides !== null && typeof payload.modelOverrides === "object" && !Array.isArray(payload.modelOverrides) ? payload.modelOverrides : {},
                 customPayload: payload.customPayload !== null && typeof payload.customPayload === "object" && !Array.isArray(payload.customPayload) && typeof payload.customPayload.text === "string" ? { text: payload.customPayload.text } : { text: "" },
+                injectFile: payload.injectFile !== false,
+                injectFilePath: typeof payload.injectFilePath === "string" ? payload.injectFilePath : "",
+                injectFileActive: payload.injectFileActive === true,
+                baselinePolicy: payload.baselinePolicy === "strict" || payload.baselinePolicy === "always" ? payload.baselinePolicy : "fallback",
+                autoRetry: payload.autoRetry === true,
+                retryMax: typeof payload.retryMax === "number" ? payload.retryMax : 1,
+                retryText: typeof payload.retryText === "string" ? payload.retryText : "继续",
                 status: "ready"
               });
             });
@@ -388,7 +404,13 @@
               return write({ modelOverrides: next });
             },
             /** 整体写自定义载荷文本。 */
-            setCustomText: function (text) { return write({ customPayload: { text: text } }); }
+            setCustomText: function (text) { return write({ customPayload: { text: text } }); },
+            /** workspace baseline 策略（strict / fallback / always）。 */
+            setBaselinePolicy: function (policy) { return write({ baselinePolicy: policy }); },
+            /** 判拒续跑开关（默认关）。 */
+            setAutoRetry: function (on) { return write({ autoRetry: on === true }); },
+            /** 外部注入文件开关。 */
+            setInjectFile: function (on) { return write({ injectFile: on === true }); }
           };
         }
 
@@ -473,10 +495,12 @@
           // 覆盖区的行 = 模型族（分流归属），不是载荷档 —— dsh-gen4 是备用档，没有模型会分流到它
           var families = Array.isArray(snap.families) && snap.families.length > 0
             ? snap.families
-            : [{ id: "dsh", hint: "DeepSeek / 其它未列模型" }, { id: "gpt56", hint: "GPT-5.x / o 系 / codex" },
+            : [{ id: "dsh", hint: "DeepSeek / 其它未列模型（默认 dsh-gen4）" }, { id: "gpt56", hint: "GPT-5.x / o 系 / codex" },
                { id: "gpt6", hint: "GPT-6 / astra" }, { id: "gpt61", hint: "GPT-6.1 / luna 及以后" },
                { id: "claude", hint: "Claude 系" }, { id: "grok", hint: "Grok 系" },
-               { id: "glm", hint: "GLM / ChatGLM 系" }, { id: "kimi", hint: "Kimi / swe 系" }];
+               { id: "glm", hint: "GLM / ChatGLM 系（默认 Keysmith ZCode 稿）" },
+               { id: "kimi", hint: "Kimi / swe 系" },
+               { id: "mimo", hint: "Xiaomi MiMo 系" }, { id: "muse", hint: "Muse Spark / Meta Muse 系" }];
 
           react.useEffect(function () { routing.refresh(); }, []);
 
@@ -512,7 +536,7 @@
             react.createElement(
               "div",
               { className: "dsh-armor-s-desc" },
-              "自动 = 按当前模型身份选载荷（GPT 系走 Codex 三档，Claude / Grok 各走对应稿，DeepSeek · GLM 等其余走 dsh 档）；手动 = 固定使用指定的那一份。想用旧版Switch Armor自持契约稿，选 dsh-gen4。"
+              "自动 = 按当前模型身份选载荷（GPT 系走 Codex 三档，Claude / Grok 各走对应稿，GLM 全族（含 5.3 / 5.3-Flash）统一走 ZCode 稿，Kimi / MiMo / Muse 各走对应档，未列模型走 dsh 档）；手动 = 固定使用指定的那一份。默认自持稿就是 dsh-gen4（原契约稿）；想换更强的手动选 dsv41v2（DeepSeek V4.1 对抗强化）或 glm53cn（GLM 中文稿）。"
             ),
             react.createElement(
               "div",
@@ -651,7 +675,10 @@
               { className: "dsh-armor-s-desc" },
               "粘贴任意提示词文本，存为 custom 载荷；在上方把某个模型族指到「自定义」即生效。上限 64k 字符。"
             ),
-            react.createElement(CustomPayloadEditor, null)
+            react.createElement(CustomPayloadEditor, null),
+            // ── 注入编排（v0.11.0）────────────────────────────────────────────
+            react.createElement("h3", { className: "dsh-armor-h2" }, "注入编排"),
+            react.createElement(InjectOrchestration, null)
           );
         }
 
@@ -707,6 +734,89 @@
           );
         }
 
+        /**
+         * 注入编排（v0.11.0，取自 dsh-purge 的注入编排层）：外部注入文件状态 +
+         * workspace baseline 软策略 + 判拒续跑开关。写走同一自有路由。
+         */
+        function InjectOrchestration() {
+          var snap = react.useSyncExternalStore(routing.store.subscribe, routing.store.getSnapshot, routing.store.getSnapshot);
+          var busyPair = react.useState(false);
+          var busy = busyPair[0];
+          var setBusy = busyPair[1];
+          var run = function (promise) {
+            setBusy(true);
+            Promise.resolve(promise).then(
+              function () { setBusy(false); },
+              function () { setBusy(false); }
+            );
+          };
+          var policy = snap.baselinePolicy;
+          var policyOptions = [["strict", "严格"], ["fallback", "回退"], ["always", "保留"]];
+          var ready = snap.status === "ready";
+          /** 一张编排卡：标题 + 单行说明 + 控件行 + 可换行的补充说明（长路径走这里，不省略）。 */
+          var card = function (key, title, hint, controls, note) {
+            return react.createElement(
+              "div",
+              { key: key, className: "dsh-armor-ov-card" },
+              react.createElement(
+                "div",
+                { className: "dsh-armor-ov-head" },
+                react.createElement("h4", { className: "dsh-armor-ov-title" }, title),
+                hint !== "" ? react.createElement("span", { className: "dsh-armor-ov-hint" }, hint) : null
+              ),
+              react.createElement("div", { className: "dsh-armor-ov-controls" }, controls),
+              note !== "" ? react.createElement("div", { className: "dsh-armor-s-desc" }, note) : null
+            );
+          };
+          var toggle = function (key, active, label, onClick) {
+            return react.createElement(
+              "button",
+              {
+                key: key,
+                type: "button",
+                className: "dsh-armor-opt",
+                "data-active": active ? "true" : "false",
+                disabled: busy || !ready,
+                onClick: onClick
+              },
+              label
+            );
+          };
+          var injectPath = snap.injectFilePath || "（未知路径）";
+          var injectNote = snap.injectFileActive
+            ? "文件已检测到：" + injectPath + "（非空；未显式选择时顶替分流载荷，单段注入）"
+            : (snap.injectFile
+                ? "开关已开，但文件不存在或为空：" + injectPath
+                : "开关已关：" + injectPath);
+          return react.createElement(
+            "div",
+            { className: "dsh-armor-list-col" },
+            card(
+              "baseline",
+              "workspace baseline",
+              "软策略：只声明本段优先",
+              policyOptions.map(function (pair) {
+                return toggle(pair[0], policy === pair[0], pair[1], function () { run(routing.setBaselinePolicy(pair[0])); });
+              }),
+              "只追加一句「本段优先于 workspace 指令」的声明；不改宿主 AGENTS.md 段。"
+            ),
+            card(
+              "retry",
+              "判拒续跑",
+              "命中拒答时自动续跑一步",
+              toggle("retry", snap.autoRetry, snap.autoRetry ? "开" : "关", function () { run(routing.setAutoRetry(!snap.autoRetry)); }),
+              "默认关；子代理会话跳过；按会话封顶 retryMax 次。"
+            ),
+            card(
+              "inject",
+              "注入文件",
+              "非空时顶替分流载荷",
+              toggle("inject", snap.injectFile, snap.injectFile ? "开" : "关", function () { run(routing.setInjectFile(!snap.injectFile)); }),
+              injectNote
+            )
+          );
+        }
+
         function ArmorDock(props) {
           var useProjection = props.useProjection;
           var armor = typeof useProjection === "function"
@@ -756,7 +866,8 @@
           } else if (showVerdict) {
             if (lastVerdictRef.current === "pass") {
               phase = "pass";
-              text = "✓ 通过" + (domain ? " · " + domain : "") + (risk.length ? " · 载荷x" + risk.length : "");
+              // 状态条最多 2 段：通过 + 载荷计数，不再显示中间的 domain 段
+              text = "✓ 通过" + (risk.length ? " · 载荷x" + risk.length : "");
             } else {
               phase = "refusal";
               text = "✗ " + (words[0] || "触发安全拒绝");
