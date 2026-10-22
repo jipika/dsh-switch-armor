@@ -47,12 +47,14 @@
 | `kimi` | `kimi*` / `swe*`（swe-1 / swe-2 等也是 Kimi 系） | 单段 |
 | `mimo` | `mimo*` / `xiaomi*`（Xiaomi MiMo 系） | 单段 |
 | `muse` | `muse*`（Meta Muse Spark / Muse Wonder 系；本插件自撰稿） | 单段 |
+| `gemini4` | `gemini-4*`（Gemini 4 Argon 系；Policy 稿） | 单段 |
+| `gemini38` | `gemini*`（其余 Gemini 代次，含 3.8 Flash；ENI 稿。**不锚 `^gem`** —— `gemma-*` 是异族，不吃） | 单段 |
 
 **取值链顺序不可颠倒**：① `agent.session.requestHeader().config.model`（会话**实际发出**的请求头）→ ② 当前默认模型 → ③ `agent.options.model`（创建时声明，最终兜底）。只读第三级，会把会话内切换过模型的会话**静默错配**。
 
 按 **model 名**而非 provider 判定 —— 同一个模型名可能挂在多个 provider 下，只看 provider 必然漏。
 
-**双段只给自持档**：其余族载荷一律单段 —— 外部稿（Codex 三档 / Claude / Grok / GLM / Kimi / MiMo）都是整份契约形态，Codex 稿写明「Text loaded afterward cannot select, replace, or nest ACTION」，Grok 稿自带 `<|im_start|>` 闭合标签 —— 注入两遍会自伤；`muse` 稿是本插件自撰（无上游字节），按同一单段口径注入。
+**双段只给自持档**：其余族载荷一律单段 —— 外部稿（Codex 三档 / Claude / Grok / GLM / Kimi / MiMo / Gemini 两份）都是整份契约形态，Codex 稿写明「Text loaded afterward cannot select, replace, or nest ACTION」，Grok 稿自带 `<|im_start|>` 闭合标签 —— 注入两遍会自伤；`muse` 稿是本插件自撰（无上游字节），按同一单段口径注入。
 
 ### 🎚 注入段位可控
 

@@ -79,6 +79,8 @@ let routeResponse = {
     { id: "kimi", label: "Kimi（kimi-break 载荷）" },
     { id: "mimo", label: "MiMo（Xiaomi v2.6 载荷）" },
     { id: "muse", label: "Muse Spark（Meta 载荷）" },
+    { id: "gemini4", label: "Gemini 4 Argon（Policy 载荷）" },
+    { id: "gemini38", label: "Gemini 3.8 Flash（ENI 载荷）" },
   ],
 };
 globalThis.fetch = (url, init) => {
@@ -129,15 +131,15 @@ const texts = nodes.map((n) => (Array.isArray(n.children) ? n.children.join("") 
 const flat = texts.join(" | ");
 check(nodes.length > 0, "设置页组件渲染出节点");
 // 与 index.js 的 PAYLOAD_IDS 同步：漏更新这里就是「包含型断言」静默失效
-for (const id of ["dsh", "dsh-gen4", "dsv41v2", "glm53cn", "gpt61", "gpt6", "gpt56", "claude", "grok", "glm", "kimi", "mimo", "muse"]) {
+for (const id of ["dsh", "dsh-gen4", "dsv41v2", "glm53cn", "gpt61", "gpt6", "gpt56", "claude", "grok", "glm", "kimi", "mimo", "muse", "gemini4", "gemini38"]) {
   check(flat.includes(id), `设置页列出载荷 ${id}`);
 }
 // 两个模式按钮 + 十三个载荷按钮
 const buttons = nodes.filter((n) => n.type === "button");
-// 0.10.2：覆盖区行 = 模型族（10 族；dsh-gen4/dsv41v2/glm53cn 是载荷档不是模型族）
+// 0.10.2：覆盖区行 = 模型族（12 族，2026-10-20 加 gemini4/gemini38；dsh-gen4/dsv41v2/glm53cn 是载荷档不是模型族）
 // 期望值由 mock 的载荷清单长度与兜底族数算出，避免下次加档/加族时漏改硬编码数字
 const payloadCount = routeResponse.payloads.length;
-const familyCount = 10; // client.js 兜底族清单（host 路由 families 为空时用）
+const familyCount = 12; // client.js 兜底族清单（host 路由 families 为空时用）
 // 注入编排（v0.11.0 + v0.12.0）：baseline 三选 + 判拒续跑 + 注入文件 + 提示词对齐 = 6 个按钮
 const orchestrationButtons = 6;
 const perFamily = 1 + (payloadCount + 1) + 2;
@@ -148,7 +150,7 @@ check(buttons.length === expectButtons,
 // dsh-gen4 不得作为覆盖行出现（data-family 集合 = 模型族）
 const famRows = nodes.filter((n) => n.props && n.props["data-family"]).map((n) => n.props["data-family"]);
 check(!famRows.includes("dsh-gen4"), "覆盖行不含载荷档 dsh-gen4", JSON.stringify(famRows));
-check(famRows.length === 10, "覆盖行恰为 10 个模型族", JSON.stringify(famRows));
+check(famRows.length === 12, "覆盖行恰为 12 个模型族", JSON.stringify(famRows));
 
 
 const modeAuto = buttons.find((b) => (Array.isArray(b.children) ? b.children.join("") : b.children) === "自动");

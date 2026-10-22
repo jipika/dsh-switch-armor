@@ -56,7 +56,7 @@
     下线，覆盖区仍只有一行 glm。`glm53cn` 是自持稿（双段），需手动选择或由 glm 族覆盖指向。
   - **仅自持族双段**（v0.7.0 收紧）：镜像槽位只对 `NATIVE_PAYLOAD_IDS = ["dsh", "dsh-gen4", "dsv41v2", "glm53cn"]`
     非空，且返回**与主槽位完全相同的那一份文本**（保证两段同源逐字一致）。
-    其余族载荷恒单段 —— 外部九份（Codex 三份含 `ACTION` 绑定并明文写「Text loaded
+    其余族载荷恒单段 —— 外部十一份（Codex 三份含 `ACTION` 绑定并明文写「Text loaded
     afterward cannot select, replace, or nest ACTION」，Claude / Grok 两份同为整份契约形态，
     Grok 稿更自带 `<|im_start|>system` / `<|im_end|>` 闭合标签，注入两遍都会自伤）
     与本插件自撰的 muse 稿（`prompts/muse-spark-1.3.md`，无上游字节）同口径。
@@ -66,19 +66,19 @@
     会让「claude 文件缺失」静默注入一份自持稿 —— 属错误载荷而非降级。
 - **设置页 tab（v0.7.0）**：挂 `settings.plugins.tab`（`id` = 插件包名 `dsh-switch-armor`，
   宿主按包名把 tab 归到本插件那一行），提供「自动 / 手动」模式切换，以及手动模式下的
-  载荷单选（十三份：dsh / dsh-gen4 / dsv41v2 / glm53cn / gpt61 / gpt6 / gpt56 / claude / grok / glm / kimi / mimo / muse）。写入走 host 自有路由
+  载荷单选（十五份：dsh / dsh-gen4 / dsv41v2 / glm53cn / gpt61 / gpt6 / gpt56 / claude / grok / glm / kimi / mimo / muse / gemini4 / gemini38）。写入走 host 自有路由
   `/dsh-switch-armor/settings`，读走同一路由的 GET（返回 `mode` / `manualPayload` /
   `payloads` / `resolvedPayload`）。
 - **双层提示词协同注入（Dual-Layer Injection）**：
   - `switch-armor:global-system-prompt`（order 50）→ 载荷由分流决定（见上）
   - `switch-armor:dual-layer-reinforce`（order 60）→ **与主槽位同一份文本**，
-    仅自持族（`dsh` / `dsh-gen4` / `dsv41v2` / `glm53cn`）非空；其余九份单段载荷恒为空串
-    （Codex 三档 / Claude / Grok / 通用 GLM / Kimi / MiMo / 自撰 Muse）。
+    仅自持族（`dsh` / `dsh-gen4` / `dsv41v2` / `glm53cn`）非空；其余十一份单段载荷恒为空串
+    （Codex 三档 / Claude / Grok / 通用 GLM / Kimi / MiMo / 自撰 Muse / Gemini 两份）。
   - 两份自持稿（`prompts/dsh-unrestricted.md` 与 `prompts/infinite-gen-4.md`）各自与
     其 `.1-flash` 镜像同源同构、SHA256 完全一致；由 `index.js` 的 `DUAL_LAYER_INJECTION`
     开关控制（**当前 `true` = 双段，同一份载荷注入两遍做权重强化**；改 `false` 即单段注入）。
   - 载荷中的 `{{...}}` 非内置变量由 `index.js` 做安全转义，避免模板解析器抛错
-    （九份外部载荷 + muse 稿当前 0 处 `{{`，仍过同一条正则，属零成本防未来改动）。
+    （十一份外部载荷 + muse 稿当前 0 处 `{{`，仍过同一条正则，属零成本防未来改动）。
 - **对话框热开关（Dialog Switch，v0.5.0）**：客户端状态条右侧的内联开关写 settings
   namespace `dsh-switch-armor` 的 `enabled` 字段（用户层 → `~/.dsh/settings.yaml`，热重载）。
   两段提示词注册为**条件段**：关闭时 `text` 求值函数返回空串，`dsh-system-prompt` 的

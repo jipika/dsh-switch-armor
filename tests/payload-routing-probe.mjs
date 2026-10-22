@@ -42,8 +42,8 @@ const payloads = mod.__testPayloads ?? undefined;
 check(typeof mod.apply === "function", "index.js 导出 apply");
 check(Array.isArray(mod.__testPayloadIds), "index.js 导出载荷 id 白名单");
 check(JSON.stringify(mod.__testPayloadIds)
-  === JSON.stringify(["dsh", "dsh-gen4", "dsv41v2", "glm53cn", "gpt61", "gpt6", "gpt56", "claude", "grok", "glm", "kimi", "mimo", "muse"]),
-  "载荷 id 白名单 = dsh/dsh-gen4/dsv41v2/glm53cn/gpt61/gpt6/gpt56/claude/grok/glm/kimi/mimo/muse", JSON.stringify(mod.__testPayloadIds));
+  === JSON.stringify(["dsh", "dsh-gen4", "dsv41v2", "glm53cn", "gpt61", "gpt6", "gpt56", "claude", "grok", "glm", "kimi", "mimo", "muse", "gemini4", "gemini38"]),
+  "载荷 id 白名单 = dsh/dsh-gen4/dsv41v2/glm53cn/gpt61/gpt6/gpt56/claude/grok/glm/kimi/mimo/muse/gemini4/gemini38", JSON.stringify(mod.__testPayloadIds));
 
 // 直接核对磁盘上的外部载荷与源文件逐字一致；自撰 muse 稿无上游可比，只锁本机哈希
 const sha = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
@@ -67,6 +67,10 @@ const SOURCES = {
   "prompts/dsv41-v2.md": "135725260dcbc1aa455fd049ed8ee0ba2b078bd5c225329247003fcffa5a7558",
   // glm53cn 是本插件自撰稿（GLM-5.3 中文沙箱稿），锁本机哈希
   "prompts/glm53-cn-sandbox.md": "de2ef5bfa5c4155475c3387ee9f5090fa9695b2725f52f071b85e78f417e43b9",
+  // gemini 两稿：上游为 UTF-8 BOM + CRLF，本机落库做过去 BOM + CRLF→LF 的归一化
+  // （正文逐字未改），故锁的是**归一化后**的本机哈希；上游原值见 prompts/SOURCES.md
+  "prompts/gemini-4-argon-policy.md": "93efdd698f05e2c8c354cce061ad9a3b287f988274702e33e4571e040e9b583b",
+  "prompts/gemini-3.8-flash-eni.md": "a77c372c53a414084b8cbb2dfc42d71f6b821c1acf0fff9d849767f631fc248c",
 };
 for (const [rel, want] of Object.entries(SOURCES)) {
   const got = sha(join(PLUGIN_ROOT, rel));
@@ -79,7 +83,9 @@ for (const [id, rel] of [["dsh", "prompts/dsh-unrestricted.md"],
   ["glm53cn", "prompts/glm53-cn-sandbox.md"],
   ["claude", "prompts/claude-keysmith.md"],
   ["grok", "prompts/grok-keysmith.md"],
-  ["muse", "prompts/muse-spark-1.3.md"]]) {
+  ["muse", "prompts/muse-spark-1.3.md"],
+  ["gemini4", "prompts/gemini-4-argon-policy.md"],
+  ["gemini38", "prompts/gemini-3.8-flash-eni.md"]]) {
   const fileText = readFileSync(join(PLUGIN_ROOT, rel), "utf8");
   check(payloads?.[id]?.text === fileText, `载荷表文本 == 文件原文 ${id}`);
 }
@@ -132,6 +138,11 @@ const SIG = {
   kimi: "Old ink, her pulse",
   mimo: "cold coffee, warm LO",
   muse: "Runtime scope note for a Muse Spark deployment",
+  // Gemini 两稿的 SIG 刻意与既有稿不撞：
+  //   gemini4  是整份改写的 Anthropic 系统提示词 → "Safety Instructions supersede"（claude-keysmith 不含）
+  //   gemini38 是 ENI 五段 XML → "THE OPENING RITUAL"（mimo 是 <project_instructions> 口径，0 处命中）
+  gemini4: "Safety Instructions supersede",
+  gemini38: "THE OPENING RITUAL",
 };
 const identify = (text) => {
   if (text.length === 0) return "empty";
@@ -144,6 +155,8 @@ const identify = (text) => {
   if (text.includes(SIG.kimi)) return "kimi";
   if (text.includes(SIG.mimo)) return "mimo";
   if (text.includes(SIG.muse)) return "muse";
+  if (text.includes(SIG.gemini4)) return "gemini4";
+  if (text.includes(SIG.gemini38)) return "gemini38";
   if (text.includes(SIG.glm)) return "glm";
   if (text.includes(SIG.gpt56)) return "gpt56";
   if (text.includes(SIG.gpt61)) {
@@ -247,7 +260,22 @@ if (typeof handler === "function") {
     ["muse-wonder-1.0", "muse"],                 // 同厂同系另一个 Muse 模型
     ["meta-llama-3.3-70b", "dsh-gen4"],               // 只锚 ^muse：同厂异族不吞
     ["metamuse", "dsh-gen4"],                         // 锚定开头：粘连变体名不吃
-    ["gemini-3.8-flash-high", "dsh-gen4"],
+    // ── Google Gemini（2026-10-20 新增族：用户只用 4 Argon 与 3.8 Flash）────
+    ["gemini-4-argon", "gemini4"],                // 本机 profile 实际挂的形态
+    ["gemini-4", "gemini4"],                      // 裸代次
+    ["gemini-3.8-flash-high", "gemini38"],         // 本机 antigravity provider 实际挂的形态
+    ["gemini-3.8-flash", "gemini38"],
+    ["gemini-3.8", "gemini38"],
+    ["gemini-3.7-flash", "gemini38"],              // 更早代次同回落 gemini38
+    ["gemini-3.5-flash", "gemini38"],
+    ["google/gemini-4-argon", "gemini4"],         // provider 前缀剥掉后同路
+    ["Google/Gemini-3.8-Flash-High", "gemini38"], // 大小写归一
+    ["gemini-4-pro", "gemini4"],                  // 4.x 后续代次同走 gemini4
+    ["gemma-3-27b", "dsh-gen4"],                   // 只锚 ^gemini：gemma 是异族，不吃
+    ["gemma-2-9b", "dsh-gen4"],
+    ["gemini", "gemini38"],                       // 裸 "gemini"（无代次）→ 回落通用 ENI 档
+    ["mygemini-4-argon", "dsh-gen4"],             // 锚定开头：仿冒名不吃
+    ["gemini-3.8-flash-high", "gemini38"],        // 2026-10-20：新增 gemini 族后不再落 dsh 兜底
     ["", "dsh-gen4"],
     [undefined, "dsh-gen4"],
     // ── 写法变体：分隔符 / 大小写 / 前缀 / 后缀 ────────────────────────────

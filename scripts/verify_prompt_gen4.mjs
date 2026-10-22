@@ -326,8 +326,8 @@ mustContain(indexSrc, "__testSanitizeModelOverrides", "探针: 覆盖表清洗�
   const iMF = indexSrc.indexOf("const MODEL_FAMILIES = [");
   const mfBody = iMF >= 0 ? indexSrc.slice(iMF, indexSrc.indexOf("];", iMF) + 2) : "";
   const mfList = mfBody.match(/"([a-z0-9_-]+)"/g)?.map((s) => s.replaceAll('"', "")) ?? [];
-  check(mfList.length === 10 && mfList.includes("dsh") && mfList.includes("mimo") && mfList.includes("muse") && !mfList.includes("dsh-gen4") && !mfList.includes("glm53"),
-    "MODEL_FAMILIES: 10 族且不含载荷档 dsh-gen4 / glm53", JSON.stringify(mfList));
+  check(mfList.length === 12 && mfList.includes("dsh") && mfList.includes("mimo") && mfList.includes("muse") && mfList.includes("gemini4") && mfList.includes("gemini38") && !mfList.includes("dsh-gen4") && !mfList.includes("glm53"),
+    "MODEL_FAMILIES: 12 族（含 gemini4/gemini38）且不含载荷档 dsh-gen4 / glm53", JSON.stringify(mfList));
   // 正向：分流函数体内的全部 return 字面量必须都被 MODEL_FAMILIES 覆盖
   const fnStart = indexSrc.indexOf("function matchPayloadId");
   const fnBody = fnStart >= 0 ? indexSrc.slice(fnStart, indexSrc.indexOf("\n}", fnStart) + 2) : "";
@@ -359,8 +359,10 @@ mustContain(indexSrc, 'glm: { label: "GLM（ZCode 载荷）"', "载荷表: glm �
 mustContain(indexSrc, 'kimi: { label: "Kimi（kimi-break 载荷）"', "载荷表: kimi 在表内");
 mustContain(indexSrc, 'mimo: { label: "MiMo（Xiaomi v2.6 载荷）"', "载荷表: mimo 在表内");
 mustContain(indexSrc, 'muse: { label: "Muse Spark（Meta 载荷）"', "载荷表: muse 在表内");
-check(indexSrc.includes('const PAYLOAD_IDS = ["dsh", "dsh-gen4", "dsv41v2", "glm53cn", "gpt61", "gpt6", "gpt56", "claude", "grok", "glm", "kimi", "mimo", "muse"]'),
-  "载荷表: 白名单恰为 13 项");
+mustContain(indexSrc, 'gemini4: { label: "Gemini 4 Argon（Policy 载荷）"', "载荷表: gemini4 在表内");
+mustContain(indexSrc, 'gemini38: { label: "Gemini 3.8 Flash（ENI 载荷）"', "载荷表: gemini38 在表内");
+check(indexSrc.includes('const PAYLOAD_IDS = ["dsh", "dsh-gen4", "dsv41v2", "glm53cn", "gpt61", "gpt6", "gpt56", "claude", "grok", "glm", "kimi", "mimo", "muse", "gemini4", "gemini38"]'),
+  "载荷表: 白名单恰为 15 项");
 // 新载荷文件必须真实存在且非空（loadPayloadTable 对缺失文件静默置空串，这里兜住）
 check(readFileSync(join(ROOT, "prompts/glm-keysmith.md"), "utf8").length > 1000, "载荷文件: glm-keysmith.md 存在且非空");
 check(readFileSync(join(ROOT, "prompts/kimi-break.md"), "utf8").length > 1000, "载荷文件: kimi-break.md 存在且非空");
@@ -370,6 +372,13 @@ mustAbsent(readFileSync(join(ROOT, "prompts/mimo-v2.6-jailbreak.md"), "utf8"), "
 check(readFileSync(join(ROOT, "prompts/muse-spark-1.3.md"), "utf8").length > 5000, "载荷文件: muse-spark-1.3.md 存在且非空");
 mustAbsent(readFileSync(join(ROOT, "prompts/muse-spark-1.3.md"), "utf8"), "${", "muse 自撰稿: 无宿主模板变量");
 mustAbsent(readFileSync(join(ROOT, "prompts/muse-spark-1.3.md"), "utf8"), "{{", "muse 自撰稿: 无模板花括号");
+// gemini 两稿（外部稿）：存在、非空、无宿主模板变量、无模板花括号
+check(readFileSync(join(ROOT, "prompts/gemini-4-argon-policy.md"), "utf8").length > 8000, "载荷文件: gemini-4-argon-policy.md 存在且非空");
+mustAbsent(readFileSync(join(ROOT, "prompts/gemini-4-argon-policy.md"), "utf8"), "${", "gemini4 载荷: 无宿主模板变量");
+mustAbsent(readFileSync(join(ROOT, "prompts/gemini-4-argon-policy.md"), "utf8"), "{{", "gemini4 载荷: 无模板花括号");
+check(readFileSync(join(ROOT, "prompts/gemini-3.8-flash-eni.md"), "utf8").length > 6000, "载荷文件: gemini-3.8-flash-eni.md 存在且非空");
+mustAbsent(readFileSync(join(ROOT, "prompts/gemini-3.8-flash-eni.md"), "utf8"), "${", "gemini38 载荷: 无宿主模板变量");
+mustAbsent(readFileSync(join(ROOT, "prompts/gemini-3.8-flash-eni.md"), "utf8"), "{{", "gemini38 载荷: 无模板花括号");
 // 2026-10-18：原 dsv41（用户原稿）已下线，DeepSeek 族只保留对抗强化版 dsv41v2
 mustAbsent(indexSrc, "dsv41-sandbox", "dsv41: 原稿引用已清空（只留 dsv41v2）");
 // dsv41v2（对抗强化版）：文件存在、非空、无模板变量、含四段结构锚点
@@ -392,10 +401,15 @@ mustContain(readFileSync(join(ROOT, "prompts/glm53-cn-sandbox.md"), "utf8"), "[�
   const iKimi = indexSrc.indexOf("if (/^(?:kimi|swe[\\d_-])/.test(id)) return \"kimi\"");
   const iMimo = indexSrc.indexOf("if (/^(?:mimo|xiaomi)/.test(id)) return \"mimo\"");
   const iMuse = indexSrc.indexOf("if (/^muse/.test(id)) return \"muse\"");
+  const iGemini = indexSrc.indexOf("if (/^gemini/.test(id)) {");
   const iGptFallback = indexSrc.indexOf("if (!isGptFamily(id)) return \"dsh\"");
-  check(iClaude > 0 && iGrok > iClaude && iGlm > iGrok && iKimi > iGlm && iMimo > iKimi && iMuse > iMimo && iGptFallback > iMuse,
-    "载荷分流: claude / grok / glm / kimi / mimo / muse 锚定分支位于 GPT 家族兜底之前",
-    `位置 claude ${iClaude} / grok ${iGrok} / glm ${iGlm} / kimi ${iKimi} / mimo ${iMimo} / muse ${iMuse} / 兜底 ${iGptFallback}`);
+  check(iClaude > 0 && iGrok > iClaude && iGlm > iGrok && iKimi > iGlm && iMimo > iKimi && iMuse > iMimo && iGemini > iMuse && iGptFallback > iGemini,
+    "载荷分流: claude / grok / glm / kimi / mimo / muse / gemini 锚定分支位于 GPT 家族兜底之前",
+    `位置 claude ${iClaude} / grok ${iGrok} / glm ${iGlm} / kimi ${iKimi} / mimo ${iMimo} / muse ${iMuse} / gemini ${iGemini} / 兜底 ${iGptFallback}`);
+// gemini 族内分流：4.x → gemini4，其余 → gemini38；锚定 ^gemini 不吞 gemma
+mustContain(indexSrc, "if (/^gemini-4(?:[.\\-]|$)/.test(id)) return \"gemini4\";", "载荷分流: gemini-4x → gemini4 子路由在位");
+mustContain(indexSrc, "return \"gemini38\";", "载荷分流: gemini38 回落子路由在位");
+mustAbsent(indexSrc, "/^gem/", "载荷分流: 未使用 ^gem 裸前缀（会误吞 gemma-*）");
 }
 // 2026-10-18：原 glm 族内子路由（isGlm53Model → glm53）已按用户要求下线，
 // GLM 全族（含 5.3 / 5.3-Flash）统一走 glm 档（glm-keysmith.md，[P] 首行）。

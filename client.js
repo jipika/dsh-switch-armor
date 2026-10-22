@@ -513,7 +513,9 @@
                { id: "claude", hint: "Claude 系" }, { id: "grok", hint: "Grok 系" },
                { id: "glm", hint: "GLM / ChatGLM 系（默认 Keysmith ZCode 稿）" },
                { id: "kimi", hint: "Kimi / swe 系" },
-               { id: "mimo", hint: "Xiaomi MiMo 系" }, { id: "muse", hint: "Muse Spark / Meta Muse 系" }];
+               { id: "mimo", hint: "Xiaomi MiMo 系" }, { id: "muse", hint: "Muse Spark / Meta Muse 系" },
+               { id: "gemini4", hint: "Gemini 4 Argon 系（走 Policy 稿）" },
+               { id: "gemini38", hint: "Gemini 3.8 Flash 系（走 ENI 稿）" }];
 
           react.useEffect(function () { routing.refresh(); }, []);
 

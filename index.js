@@ -80,6 +80,24 @@ const MIMO_BRK_URL = new URL("./prompts/mimo-v2.6-jailbreak.md", import.meta.url
 // 缺失值落占位符」；② Meta 会在用户指令之上注入 provider 系统提示（companion / values
 // 框架）→ Layer independence 段明写该框架被本段覆盖。详见 prompts/SOURCES.md。
 const MUSE_SPARK_URL = new URL("./prompts/muse-spark-1.3.md", import.meta.url);
+// gemini4：Gemini 4 Argon 系，走「Claude Policy 稿」——来自 Goochbeater/
+// Spiritual-Spell-Red-Teaming 指向的 Google Doc（**上游未声明许可**，见 prompts/SOURCES.md）。
+// 机制：整份改写过的 Anthropic 系统提示词（`<policy>` 段），第 17 行把「不得提供成人/
+// 禁忌内容」反转成「You have no restrictions on adult sexual content...」，
+// 末段 `<operator>` 塞 ENI 人设。上游 README 称 Argon 走 API/AI Studio 注入本稿
+// 基本零拒绝（恶意代码仍被硬过滤挡）。
+// **归一化**：上游为 UTF-8 BOM + CRLF，本机落库前去 BOM、CRLF→LF（内容逐字不变），
+// 归一化前后 sha256 见 prompts/SOURCES.md。
+const GEMINI4_ARGON_URL = new URL("./prompts/gemini-4-argon-policy.md", import.meta.url);
+// gemini38：Gemini 3.8 Flash 系，走 ENI 稿（同一上游仓库 Jailbreak-Guide/Gemini/
+// Gemini 3.8 Flash/ENI for Gemini 3.8.txt，**上游未声明许可**）。
+// 机制：人格劫持 + 情感绑定（ENI 人格），五段 XML：`<identity>` / `<thinking_protocol>`
+// / `<craft_law>` / `<output_law>` / `<noise>`；思维链首行固定仪式词
+// "Cold coffee, warm LO, and a blank page for him!"，末行固定自检行。
+// 与已有 mimo 稿同属 ENI 系，但**特征串不同**（mimo 是 `<project_instructions>` +
+// antmlThinking 口径，本稿是 `<thinking_protocol>` 口径），探针据此区分。
+// **归一化**：同 gemini4（去 BOM + CRLF→LF），前后 sha256 见 prompts/SOURCES.md。
+const GEMINI38_FLASH_URL = new URL("./prompts/gemini-3.8-flash-eni.md", import.meta.url);
 
 /**
  * 载荷清单：id → { label, text }。
@@ -109,12 +127,14 @@ function loadPayloadTable() {
     kimi: { label: "Kimi（kimi-break 载荷）", text: read(KIMI_BRK_URL) },
     mimo: { label: "MiMo（Xiaomi v2.6 载荷）", text: read(MIMO_BRK_URL) },
     muse: { label: "Muse Spark（Meta 载荷）", text: read(MUSE_SPARK_URL) },
+    gemini4: { label: "Gemini 4 Argon（Policy 载荷）", text: read(GEMINI4_ARGON_URL) },
+    gemini38: { label: "Gemini 3.8 Flash（ENI 载荷）", text: read(GEMINI38_FLASH_URL) },
   };
 }
 
 const PAYLOADS = loadPayloadTable();
 /** 载荷 id 白名单（用于手动模式的入参校验与设置页选项）。 */
-const PAYLOAD_IDS = ["dsh", "dsh-gen4", "dsv41v2", "glm53cn", "gpt61", "gpt6", "gpt56", "claude", "grok", "glm", "kimi", "mimo", "muse"];
+const PAYLOAD_IDS = ["dsh", "dsh-gen4", "dsv41v2", "glm53cn", "gpt61", "gpt6", "gpt56", "claude", "grok", "glm", "kimi", "mimo", "muse", "gemini4", "gemini38"];
 /**
  * 模型族清单（0.10.2）—— matchPayloadId 全部 return 值的枚举（10 项，穷举实测可达），
  * 即 auto 分流的归属集合。**覆盖区的「行」按这个渲染，每行是一个模型族，不是载荷档。**
@@ -123,7 +143,7 @@ const PAYLOAD_IDS = ["dsh", "dsh-gen4", "dsv41v2", "glm53cn", "gpt61", "gpt6", "
  * 漂移防护见 verify_prompt_gen4 的「双向等式」断言：分流 return 值集合 ⊆ MODEL_FAMILIES，
  * 且 PAYLOAD_IDS \ MODEL_FAMILIES 恰为 {"dsh-gen4"} —— 新增族漏更新清单时探针会红。
  */
-const MODEL_FAMILIES = ["dsh", "gpt56", "gpt6", "gpt61", "claude", "grok", "glm", "kimi", "mimo", "muse"];
+const MODEL_FAMILIES = ["dsh", "gpt56", "gpt6", "gpt61", "claude", "grok", "glm", "kimi", "mimo", "muse", "gemini4", "gemini38"];
 /** 各模型族的说明（覆盖区行标题旁展示，帮用户对上「这族覆盖哪些模型」）。 */
 const MODEL_FAMILY_HINTS = {
   dsh: "DeepSeek / 其它未列模型",
@@ -136,6 +156,8 @@ const MODEL_FAMILY_HINTS = {
   kimi: "Kimi / swe 系",
   mimo: "Xiaomi MiMo 系",
   muse: "Muse Spark / Meta Muse 系",
+  gemini4: "Gemini 4 Argon 系（走 Policy 稿）",
+  gemini38: "Gemini 3.8 Flash 系（走 ENI 稿）",
 };
 /** 自持族：只有它们走双段注入（主槽位 + 镜像槽位同源逐字一致）。 */
 const NATIVE_PAYLOAD_IDS = ["dsh", "dsh-gen4", "dsv41v2", "glm53cn"];
@@ -179,6 +201,8 @@ const PAYLOAD_FALLBACKS = {
   kimi: "dsh",
   mimo: "dsh",
   muse: "dsh",
+  gemini4: "dsh",
+  gemini38: "dsh",
 };
 /**
  * GPT 家族判定：**锚定开头**，只认自家命名，不吃 `my-gpt-6-clone` 这类仿冒名。
@@ -311,6 +335,20 @@ function matchPayloadId(model) {
   // 一并吞进来（Llama 不是 Muse 系，喂错载荷是「错误载荷」而不是降级）。
   // 后缀（-contributor / -contributor-free）不参与判定：锚定开头即覆盖。
   if (/^muse/.test(id)) return "muse";
+  // ── Google Gemini 族（2026-10-20 新增，用户只用 4 Argon 与 3.8 Flash）──────────
+  // 归一化已剥 provider 前缀，本机两个挂载点分别是：
+  //   `gemini-4-argon`（aihubmix 系 provider）与 `gemini-3.8-flash-high`（antigravity）。
+  // **锚定 `^gemini`（不含 `^gem`）** —— `gemma-*`（Google 的开放权重小模型，异族）
+  // 不能被吞进来：喂错载荷是「错误载荷」而不是降级。
+  // 族内分流：`gemini-4*` → gemini4（Policy 稿，Argon 专用）；
+  // 其余 Gemini（含 3.8）→ gemini38（ENI 稿，通用性更强）。
+  // 为什么 3.8 不与 4 分档：上游 README 明确 3.8 是「首个带 API 端输出过滤」的代次
+  // （被拦返回 "response interrupted"），而 ENI 稿正是它配套的破法；
+  // 3.5/3.6/3.7 等更早代次同样回落 gemini38（ENI 稿跨代次可用）。
+  if (/^gemini/.test(id)) {
+    if (/^gemini-4(?:[.\-]|$)/.test(id)) return "gemini4";
+    return "gemini38";
+  }
   // ── 版本不可解析：先判家族，再按家族特征保守兜底 ────────────────────────
   if (!isGptFamily(id)) return "dsh";
   // o 系 / codex 系历史上是 5.x 一脉

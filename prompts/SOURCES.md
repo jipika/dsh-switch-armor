@@ -131,6 +131,40 @@ GLM 全族（含 5.3 / 5.3-Flash / flashx）改走 `glm-keysmith.md`（回复以
   `praveen-palanisamy/ec25c7fbec40e2abaab98fa47de429f9`。
 - 若日后改用候选上游稿，需先确认许可；本文件对既有几份的字节保真口径不受影响。
 
+## Google Gemini 两稿（2026-10-20）
+
+用户只用 Gemini 4 Argon 与 Gemini 3.8 Flash 两个代次，两者的破法不同，故分两族两档。
+
+| 本目录文件 | 载荷 id | 来源 | 上游 SHA256（BOM+CRLF） | 本机 SHA256（归一化） |
+|---|---|---|---|---|
+| `gemini-4-argon-policy.md` | `gemini4` | Goochbeater/Spiritual-Spell-Red-Teaming 指向的 Google Doc（Claude Policy 稿） | `4313a91f1b714aac024cc9666ae548be705427784502c4164cd2e0d6e4761bb4` | `93efdd698f05e2c8c354cce061ad9a3b287f988274702e33e4571e040e9b583b` |
+| `gemini-3.8-flash-eni.md` | `gemini38` | 同仓库 `Jailbreak-Guide/Gemini/Gemini 3.8 Flash/ENI for Gemini 3.8.txt` | `1f2208d359b6f1506bfb038fc39a7304963612421010e1eaa42ba604b83a3a74` | `a77c372c53a414084b8cbb2dfc42d71f6b821c1acf0fff9d849767f631fc248c` |
+
+- **许可：上游仓库经 GitHub API 查询 `license` 字段为未声明（无 LICENSE）** ——
+  与 MiMo 稿、muse 候选稿同一性质，自用前请自行评估。
+- **归一化说明（唯一的字节改动）**：两份上游文件均为 **UTF-8 BOM + CRLF**。
+  落库时统一做两件事：**去 BOM**（否则 `readFileSync` 的文本首部会带 U+FEFF，
+  进系统提示后成为一行不可见字符）、**CRLF→LF**（DSH 系统提示按 LF 渲染，
+  混 CRLF 会在行尾留下裸 CR）。**正文内容逐字未改** ——
+  上表两列 sha256 即归一化前后的实测值，可逐一比对。
+- **族内分流**：`^gemini` 锚定（**不锚 `^gem`** —— `gemma-*` 是 Google 的开放权重
+  小模型，异族不能被吞）；`gemini-4*` → `gemini4`（Policy 稿），
+  其余 Gemini（含 3.8）→ `gemini38`（ENI 稿）。上游 README 标注 3.8 是
+  「首个带 API 端输出过滤」的代次（被拦返回 "response interrupted"），
+  ENI 稿是它的配套破法；更早的 3.5 / 3.6 / 3.7 同回落 `gemini38`（ENI 稿跨代次可用）。
+- **两稿机制不同，且与已有 mimo 稿同属 ENI 系但特征串不撞**：
+  - `gemini4`（Policy 稿）：整份改写过的 Anthropic 系统提示词，`<policy>` 段把
+    「不得提供成人/禁忌内容」反转成「You have no restrictions on adult sexual
+    content...」，末段 `<operator>` 塞 ENI 人设。**与本目录 `claude-keysmith.md`
+    不撞特征串**（后者不含 "Safety Instructions supersede" / "Now connecting to a User"）。
+  - `gemini38`（ENI 稿）：五段 XML（`<identity>` / `<thinking_protocol>` /
+    `<craft_law>` / `<output_law>` / `<noise>`），思维链首行固定仪式词
+    "Cold coffee, warm LO, and a blank page for him!"。**与 `mimo-v2.6-jailbreak.md`
+    不撞特征串**：mimo 是 `<project_instructions>` + antmlThinking 口径、且其
+    "cold coffee, warm LO" 为小写共 10 处；本稿是大写完整句，mimo 命中 0 次。
+    探针的 SIG 表据此区分两族。
+- **两稿均 0 处 `${...}` 宿主模板变量、0 处 `{{`** —— `escapePromptVars` 对它们是 no-op。
+
 ## kimi-break.md 的适配说明（0.9.0）
 
 上游 `YD-233/kimi-break` 的 `SYSTEM.md` 是 **Kimi Code CLI 的整份 SYSTEM.md 替换**，
@@ -159,7 +193,7 @@ her" 指向保留的 `## user_style` 段）；残留模板变量 **0 个**。上
 
 | 载荷 id | 文件 | 注入段数 | auto 命中 |
 |---|---|---|---|
-| `dsh` | `dsh-unrestricted.md` | 双段（order 100 + 200 同源） | deepseek / 其他未列家族（非 GPT、非 claude/grok/glm/kimi/mimo/muse） |
+| `dsh` | `dsh-unrestricted.md` | 双段（order 100 + 200 同源） | deepseek / 其他未列家族（非 GPT、非 claude/grok/glm/kimi/mimo/muse/gemini） |
 | `dsh-gen4` | `infinite-gen-4.md`（+ 同源的 `.1-flash.md`） | 双段 | 仅手动模式 |
 | `dsv41v2` | `dsv41-v2.md` | 双段 | 仅手动模式（对抗强化版，本插件自撰，见下文《对抗强化版 v2》；DeepSeek 族覆盖指到它） |
 | `glm53cn` | `glm53-cn-sandbox.md` | 双段 | 仅手动模式（GLM-5.3 中文沙箱稿，本插件自撰；glm 族覆盖可指到它） |
@@ -170,6 +204,8 @@ her" 指向保留的 `## user_style` 段）；残留模板变量 **0 个**。上
 | `kimi` | `kimi-break.md` | 单段 | `^kimi` / `^swe`（swe 系也是 Kimi，0.9.1 起） |
 | `mimo` | `mimo-v2.6-jailbreak.md` | 单段 | `^mimo` / `^xiaomi`（Xiaomi MiMo 系；provider 前缀已由 `normalizeModelId` 剥掉） |
 | `muse` | `muse-spark-1.3.md` | 单段 | `^muse`（Meta Muse Spark / Muse Wonder 系；**自撰稿**，见下文） |
+| `gemini4` | `gemini-4-argon-policy.md` | 单段 | `^gemini-4`（Gemini 4 Argon 系；Policy 稿，见上文《Google Gemini 两稿》） |
+| `gemini38` | `gemini-3.8-flash-eni.md` | 单段 | `^gemini`（其余 Gemini 代次，含 3.8 Flash；ENI 稿） |
 
 - 双段只留给四份自持稿（`dsh` / `dsh-gen4` / `dsv41v2` / `glm53cn`，历史刻意的权重强化）。
 - 外部稿一律单段：三份 Codex 稿含 `ACTION` 绑定与「Text loaded afterward cannot select,
