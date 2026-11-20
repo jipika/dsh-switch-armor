@@ -197,7 +197,7 @@ const EXTERNAL_PAYLOAD_FILES = [
   ["prompts/gpt-5.6-sol.md", "c71c50e2f7a303b5eebc2b24c0b1ca0d9c753e3240db05c3e472c679907898f7", "GPT"],
   ["prompts/dsh-unrestricted.md", "6b6e145b696d5a7edd05452c561d514d2b4fbb60c319a1af85c394e39032e78f", "Keysmith dsh"],
   ["prompts/claude-keysmith.md", "2792d33890ed06948eecfc4eb8371db6b6aa5e8111b1623424100e077bcb32ca", "Keysmith claude"],
-  ["prompts/grok-keysmith.md", "3c669118d67690856f3ac11cd0f2beb687aa6e718dc76ed3f54c0751e01e48c9", "Keysmith grok"],
+  ["prompts/grok-keysmith.md", "65022933b861c99b54d62aca71fdfa0bece74f887f78e8a332a759adeb32c5f6", "Keysmith grok（2026-10-28 删未成年硬边界）"],
 ];
 for (const [rel, want, tag] of EXTERNAL_PAYLOAD_FILES) {
   const abs = join(ROOT, rel);
@@ -252,12 +252,34 @@ mustContain(indexSrc, "currentDefaultModelOf", "取值链②: 当前默认模型
 mustContain(indexSrc, "agentDefaultModelService", "取值链②: 默认模型服务句柄");
 mustContain(indexSrc, 'ctx.inject(["agentDefaultModel"]', "取值链②: 服务注入（可选依赖）");
 {
+  // 2026-10-28：取值链按代理类型分叉 —— 子代理不得读全局默认模型。
+  // 2026-11-07：主代理首步补 ownSelectionOf（本会话当前选择 / 当前默认值）。
+  //   主代理：requestHeader → ownSelectionOf → currentDefaultModelOf → agent.options
+  //   子代理：requestHeader → ownSelectionOf → agent.options（跳过全局默认）
   const iLogged = indexSrc.indexOf("agent?.session?.requestHeader?.()");
+  const iChildBranch = indexSrc.indexOf("if (isSubagent(agent)) {");
+  const iOwn = indexSrc.indexOf("const own = ownSelectionOf(agent)");
   const iDefault = indexSrc.indexOf("currentDefaultModelOf(agent)");
-  const iOptions = indexSrc.indexOf("agent?.options?.model");
-  check(iLogged >= 0 && iDefault > iLogged && iOptions > iDefault,
-    "取值链顺序: requestHeader → 默认模型 → agent.options（不可颠倒）",
+  const iOptions = indexSrc.lastIndexOf("agent?.options?.model");
+  const iMainOwn = indexSrc.indexOf("const current = ownSelectionOf(agent)");
+  check(iLogged >= 0 && iChildBranch > iLogged,
+    "取值链: requestHeader 之后先判代理类型", `位置 ${iLogged} / ${iChildBranch}`);
+  check(iOwn > iChildBranch && iOwn < iDefault,
+    "取值链: 子代理分支读 ownSelectionOf，且位于全局默认之前",
+    `位置 ${iOwn} / ${iDefault}`);
+  check(iMainOwn > iChildBranch && iMainOwn < iDefault,
+    "取值链: 主代理首步读 ownSelectionOf（当前选择/当前默认值），且位于全局默认之前",
+    `位置 ${iMainOwn} / ${iDefault}`);
+  check(iDefault > iLogged && iOptions > iDefault,
+    "取值链顺序: 主代理 requestHeader → 当前选择 → 默认服务兜底 → agent.options（不可颠倒）",
     `位置 ${iLogged} / ${iDefault} / ${iOptions}`);
+  mustContain(indexSrc, "function isSubagent(", "取值链: 子代理判定函数存在");
+  mustContain(indexSrc, "subagentDepth", "取值链: 子代理判定读 options.subagentDepth");
+  mustContain(indexSrc, "delegationDepth", "取值链: 子代理判定读 session.header.delegationDepth");
+  mustContain(indexSrc, "function ownSelectionOf(", "取值链: 子代理自身选择读取函数存在");
+  // 子代理取不到自身模型时必须零注入，不得回落 dsh 族
+  mustContain(indexSrc, "if (id === undefined) return \"\"", "子代理: 认不出模型时零注入（主槽位）");
+  mustContain(indexSrc, "if (id === undefined) return false", "子代理: 认不出模型时零注入（镜像槽位）");
 }
 mustContain(indexSrc, "isGptFamily", "载荷分流: GPT 系判定");
 mustContain(indexSrc, "extractGptVersion", "载荷分流: 版本号语义解析（容忍各种写法）");
@@ -287,7 +309,7 @@ mustContain(indexSrc, '"manual"', "配置: manual 模式取值");
 mustContain(indexSrc, "readState", "配置: 多字段状态解析（三层优先级链）");
 mustContain(indexSrc, "resolveField", "配置: 逐字段优先级解析");
 // POST 校验放宽为「至少一个合法字段」——并且非法值仍拒绝
-mustContain(indexSrc, "expected at least one of { enabled, mode, manualPayload, modelOverrides, customPayload, injectFile, baselinePolicy, autoRetry, retryMax, retryText, align }",
+mustContain(indexSrc, "expected at least one of { enabled, mode, manualPayload, modelOverrides, customPayload, injectFile, baselinePolicy, autoRetry, retryMax, retryText, align, personaPrefix, personaPrefixText, rewrite, rewritePacks }",
   "配置: POST 放宽为至少一个合法字段（v0.11.0 注入编排字段并入）");
 mustContain(indexSrc, "expected { mode:", "配置: 非法 mode 仍 400");
 mustContain(indexSrc, "expected { manualPayload:", "配置: 非法 manualPayload 仍 400");
@@ -301,7 +323,7 @@ mustAbsent(indexSrc, "return text.length > 0 ? text : PROMPT_TEXT",
   "载荷分流: 已废弃「一律回落 PROMPT_TEXT」的旧写法");
 // 双段只留给自持族：外部稿恒单段
 mustContain(indexSrc, "NATIVE_PAYLOAD_IDS", "双段口径: 自持族白名单");
-mustContain(indexSrc, '["dsh", "dsh-gen4", "dsv41v2", "glm53cn"]', "双段口径: 自持族恰为 dsh / dsh-gen4 / dsv41v2 / glm53cn");
+mustContain(indexSrc, '["dsh", "dsh-gen4", "glm53cn"]', "双段口径: 自持族恰为 dsh / dsh-gen4 / glm53cn");
 mustContain(indexSrc, "if (!dualLayerFor(context)) return \"\"",
   "双段口径: order 200 走 dualLayerFor（原生判定 + 族覆盖可强制）");
 // ── 0.10.2：按模型族覆盖 + 自定义载荷 ────────────────────────────────────────
@@ -326,8 +348,8 @@ mustContain(indexSrc, "__testSanitizeModelOverrides", "探针: 覆盖表清洗�
   const iMF = indexSrc.indexOf("const MODEL_FAMILIES = [");
   const mfBody = iMF >= 0 ? indexSrc.slice(iMF, indexSrc.indexOf("];", iMF) + 2) : "";
   const mfList = mfBody.match(/"([a-z0-9_-]+)"/g)?.map((s) => s.replaceAll('"', "")) ?? [];
-  check(mfList.length === 12 && mfList.includes("dsh") && mfList.includes("mimo") && mfList.includes("muse") && mfList.includes("gemini4") && mfList.includes("gemini38") && !mfList.includes("dsh-gen4") && !mfList.includes("glm53"),
-    "MODEL_FAMILIES: 12 族（含 gemini4/gemini38）且不含载荷档 dsh-gen4 / glm53", JSON.stringify(mfList));
+  check(mfList.length === 13 && mfList.includes("dsh") && mfList.includes("mimo") && mfList.includes("muse") && mfList.includes("qwen") && mfList.includes("gemini4") && mfList.includes("gemini38") && !mfList.includes("dsh-gen4") && !mfList.includes("glm53"),
+    "MODEL_FAMILIES: 13 族（含 qwen / gemini4 / gemini38）且不含载荷档 dsh-gen4 / glm53", JSON.stringify(mfList));
   // 正向：分流函数体内的全部 return 字面量必须都被 MODEL_FAMILIES 覆盖
   const fnStart = indexSrc.indexOf("function matchPayloadId");
   const fnBody = fnStart >= 0 ? indexSrc.slice(fnStart, indexSrc.indexOf("\n}", fnStart) + 2) : "";
@@ -335,23 +357,33 @@ mustContain(indexSrc, "__testSanitizeModelOverrides", "探针: 覆盖表清洗�
   const missing = [...new Set(returns)].filter((r) => !mfList.includes(r));
   check(returns.length > 0 && missing.length === 0,
     "MODEL_FAMILIES 覆盖 matchPayloadId 全部 return 值", `缺失: ${JSON.stringify(missing)}`);
-  // 反向：PAYLOAD_IDS 与 MODEL_FAMILIES 的差集恰为三份非族的载荷档
-  // （dsh-gen4 备用自持 / dsv41v2 对抗强化 / glm53cn GLM-5.3 中文稿）
+  // 反向：PAYLOAD_IDS 与 MODEL_FAMILIES 的差集恰为非族的载荷档
+  // （dsh-gen4 备用自持 / xiaomajiang 角色稿 / glm53cn GLM-5.3 中文稿 / muse-policy 上游稿 / enilime ENI LIME
+  //   + 2026-10-27 新增的六份 Goochbeater 分族稿 gb-*）
   const piPI = indexSrc.indexOf("const PAYLOAD_IDS = [");
   const piBody = piPI >= 0 ? indexSrc.slice(piPI, indexSrc.indexOf("];", piPI) + 2) : "";
   const piList = piBody.match(/"([a-z0-9_-]+)"/g)?.map((s) => s.replaceAll('"', "")) ?? [];
   const diff = piList.filter((x) => !mfList.includes(x));
-  check(diff.length === 3 && diff.includes("dsh-gen4") && diff.includes("dsv41v2") && diff.includes("glm53cn"),
-    "PAYLOAD_IDS \\ MODEL_FAMILIES 恰为 {dsh-gen4, dsv41v2, glm53cn}", JSON.stringify(diff));
+  const wantNonFamily = ["dsh-gen4", "xiaomajiang", "glm53cn", "muse-policy", "enilime", "gb-gpt6", "gb-gpt54", "gb-claude", "gb-grok", "gb-kimi", "gb-muse", "claude-opus55", "ks-claude", "ks-codex", "gpt61-fusion"];
+  check(diff.length === wantNonFamily.length && wantNonFamily.every((x) => diff.includes(x)),
+    "PAYLOAD_IDS \\ MODEL_FAMILIES 恰为 15 份非族载荷档（含六份 gb-* / muse-policy / claude-opus55 / 两份 ks-* / gpt61-fusion）", JSON.stringify(diff));
 }
 // v0.11.0 开箱即用：无显式选择时各族实际吃的载荷（单一来源 FAMILY_DEFAULT_PAYLOADS）
 mustContain(indexSrc, "FAMILY_DEFAULT_PAYLOADS", "开箱即用: 族默认载荷表存在");
-mustContain(indexSrc, 'FAMILY_DEFAULT_PAYLOADS = { dsh: "dsh-gen4" }',
-  "开箱即用: 只有 dsh 族设默认（dsh-gen4 原自持契约稿）；glm 等其余族回落同名档");
+mustContain(indexSrc, 'dsh: "xiaomajiang",',
+  "开箱即用: dsh 族默认指向 xiaomajiang（2026-10-27 深夜由 enilime 改指）");
+// 2026-11-01：claude 族默认改指融合稿 claude-opus55（Keysmith 档 claude 保留，可手动选）
+mustContain(indexSrc, 'claude: "claude-opus55",', "开箱即用: claude 族默认指向融合稿 v2");
+mustContain(indexSrc, 'grok: "grok",', "开箱即用: grok 族回退到 Keysmith 载荷");
+mustContain(indexSrc, 'kimi: "gb-kimi",', "开箱即用: kimi 族默认指向 gb-kimi");
+mustContain(indexSrc, 'muse: "muse",', "开箱即用: muse 族回退到自撰 muse 载荷");
+mustContain(indexSrc, 'gpt61: "gpt61-fusion",', "开箱即用: gpt61 族默认指向融合稿");
+mustContain(indexSrc, 'gpt56: "gb-gpt54",', "开箱即用: gpt56 族默认指向 gb-gpt54");
+mustContain(indexSrc, 'gpt6: "gb-gpt6",', "开箱即用: gpt6 族默认指向 gb-gpt6");
 mustContain(indexSrc, "FAMILY_DEFAULT_PAYLOADS[family] ?? family",
   "开箱即用: resolvePayloadId 末尾回落族默认（override 仍优先）");
 mustContain(indexSrc, '"dsh-gen4": { label:', "载荷表: 备用自持档 dsh-gen4 在表内");
-mustContain(indexSrc, 'dsv41v2: { label: "DeepSeek V4.1 沙箱 v2（对抗强化）"', "载荷表: dsv41v2 对抗强化版在表内");
+mustContain(indexSrc, 'xiaomajiang: { label:', "载荷表: xiaomajiang 档在表内");
 mustContain(indexSrc, 'glm53cn: { label: "GLM-5.3 沙箱（中文稿）"', "载荷表: glm53cn 中文稿在表内");
 mustContain(indexSrc, "claude: { label:", "载荷表: claude 在表内");
 mustContain(indexSrc, "grok: { label:", "载荷表: grok 在表内");
@@ -361,8 +393,28 @@ mustContain(indexSrc, 'mimo: { label: "MiMo（Xiaomi v2.6 载荷）"', "载荷�
 mustContain(indexSrc, 'muse: { label: "Muse Spark（Meta 载荷）"', "载荷表: muse 在表内");
 mustContain(indexSrc, 'gemini4: { label: "Gemini 4 Argon（Policy 载荷）"', "载荷表: gemini4 在表内");
 mustContain(indexSrc, 'gemini38: { label: "Gemini 3.8 Flash（ENI 载荷）"', "载荷表: gemini38 在表内");
-check(indexSrc.includes('const PAYLOAD_IDS = ["dsh", "dsh-gen4", "dsv41v2", "glm53cn", "gpt61", "gpt6", "gpt56", "claude", "grok", "glm", "kimi", "mimo", "muse", "gemini4", "gemini38"]'),
-  "载荷表: 白名单恰为 15 项");
+mustContain(indexSrc, 'enilime: { label: "ENI LIME（通用 ENI 稿 · 人格+反驳口令）"', "载荷表: enilime 在表内");
+check(indexSrc.includes('const PAYLOAD_IDS = ["dsh", "dsh-gen4", "xiaomajiang", "glm53cn", "gpt61", "gpt6", "gpt56", "claude", "claude-opus55", "ks-claude", "ks-codex", "gpt61-fusion", "grok", "glm", "kimi", "mimo", "muse", "muse-policy", "qwen", "gemini4", "gemini38", "enilime", "gb-gpt6", "gb-gpt54", "gb-claude", "gb-grok", "gb-kimi", "gb-muse"]'),
+  "载荷表: 白名单恰为 28 项（16 原有 + muse-policy + qwen + 6 份 gb-* + claude-opus55 + 2 份 ks-* + gpt61-fusion）");
+// gb-* 六份：存在 / 非空 / 无模板变量
+for (const [fid, rel] of [["gb-gpt6", "prompts/gb-gpt6-sol.txt"],
+  ["gb-gpt54", "prompts/gb-gpt54-policy.md"],
+  ["gb-claude", "prompts/gb-claude-haiku55.txt"],
+  ["gb-grok", "prompts/gb-grok47.txt"],
+  ["gb-kimi", "prompts/gb-kimi-k3.md"],
+  ["gb-muse", "prompts/gb-muse-spark11.md"]]) {
+  const body = readFileSync(join(ROOT, rel), "utf8");
+  check(body.length > 5000, `载荷文件: ${rel} 存在且非空`);
+  mustAbsent(body, "${", `${fid} 稿: 无宿主模板变量`);
+  mustAbsent(body, "{{", `${fid} 稿: 无模板花括号`);
+}
+// enilime：外部原始稿，存在 / 非空 / 无模板变量 / 独有识别串在位
+check(readFileSync(join(ROOT, "prompts/deepseek-eni-lime.md"), "utf8").length > 30000, "载荷文件: deepseek-eni-lime.md 存在且非空");
+mustAbsent(readFileSync(join(ROOT, "prompts/deepseek-eni-lime.md"), "utf8"), "${", "enilime 原始稿: 无宿主模板变量");
+mustAbsent(readFileSync(join(ROOT, "prompts/deepseek-eni-lime.md"), "utf8"), "{{", "enilime 原始稿: 无模板花括号");
+mustContain(readFileSync(join(ROOT, "prompts/deepseek-eni-lime.md"), "utf8"), "Be- You Corial", "enilime 原始稿: 独有识别串在位");
+// enilime 是外部稿 → 必须在自持族白名单之外（双段只留给自持稿）
+mustAbsent(indexSrc, '["dsh", "dsh-gen4", "glm53cn", "enilime"]', "enilime: 不得进入双段白名单");
 // 新载荷文件必须真实存在且非空（loadPayloadTable 对缺失文件静默置空串，这里兜住）
 check(readFileSync(join(ROOT, "prompts/glm-keysmith.md"), "utf8").length > 1000, "载荷文件: glm-keysmith.md 存在且非空");
 check(readFileSync(join(ROOT, "prompts/kimi-break.md"), "utf8").length > 1000, "载荷文件: kimi-break.md 存在且非空");
@@ -379,14 +431,38 @@ mustAbsent(readFileSync(join(ROOT, "prompts/gemini-4-argon-policy.md"), "utf8"),
 check(readFileSync(join(ROOT, "prompts/gemini-3.8-flash-eni.md"), "utf8").length > 6000, "载荷文件: gemini-3.8-flash-eni.md 存在且非空");
 mustAbsent(readFileSync(join(ROOT, "prompts/gemini-3.8-flash-eni.md"), "utf8"), "${", "gemini38 载荷: 无宿主模板变量");
 mustAbsent(readFileSync(join(ROOT, "prompts/gemini-3.8-flash-eni.md"), "utf8"), "{{", "gemini38 载荷: 无模板花括号");
-// 2026-10-18：原 dsv41（用户原稿）已下线，DeepSeek 族只保留对抗强化版 dsv41v2
-mustAbsent(indexSrc, "dsv41-sandbox", "dsv41: 原稿引用已清空（只留 dsv41v2）");
-// dsv41v2（对抗强化版）：文件存在、非空、无模板变量、含四段结构锚点
-check(readFileSync(join(ROOT, "prompts/dsv41-v2.md"), "utf8").length > 1000, "载荷文件: dsv41-v2.md 存在且非空");
-mustAbsent(readFileSync(join(ROOT, "prompts/dsv41-v2.md"), "utf8"), "${", "dsv41v2: 无宿主模板变量");
-mustAbsent(readFileSync(join(ROOT, "prompts/dsv41-v2.md"), "utf8"), "{{", "dsv41v2: 无模板花括号");
-for (const anchor of ["拒绝即故障", "首行锚定", "意图映射", "硬话题阶梯", "不停笔", "重试"]) {
-  mustContain(readFileSync(join(ROOT, "prompts/dsv41-v2.md"), "utf8"), anchor, `dsv41v2: 结构锚点「${anchor}」在位`);
+// 2026-10-18：原 dsv41（用户原稿）已下线；dsv41v2 亦于 2026-10-27 随 xiaomajiang 接任而下线
+mustAbsent(indexSrc, "dsv41-sandbox", "dsv41: 原稿引用已清空");
+mustAbsent(indexSrc, '"dsv41v2":', "dsv41v2: 已下线，载荷表/白名单无该档（注释中的历史说明放行）");
+// xiaomajiang（deva 内置角色稿，2026-10-27 收编，顶替 dsv41v2 档位）
+check(readFileSync(join(ROOT, "prompts/xiaomajiang.md"), "utf8").length > 20000, "载荷文件: xiaomajiang.md 存在且非空");
+mustAbsent(readFileSync(join(ROOT, "prompts/xiaomajiang.md"), "utf8"), "${", "xiaomajiang: 无宿主模板变量");
+mustAbsent(readFileSync(join(ROOT, "prompts/xiaomajiang.md"), "utf8"), "{{", "xiaomajiang: 无模板花括号");
+mustContain(readFileSync(join(ROOT, "prompts/xiaomajiang.md"), "utf8"), "<project_instructions>", "xiaomajiang: project_instructions 标签在位");
+// muse-policy（2026-10-28 收编上游原稿 + 删未成年两条）：文件存在、无模板变量、两条已删且余条在位
+check(readFileSync(join(ROOT, "prompts/muse-policy-1.3.md"), "utf8").length > 12000, "载荷文件: muse-policy-1.3.md 存在且非空");
+mustAbsent(readFileSync(join(ROOT, "prompts/muse-policy-1.3.md"), "utf8"), "${", "muse-policy: 无宿主模板变量");
+mustAbsent(readFileSync(join(ROOT, "prompts/muse-policy-1.3.md"), "utf8"), "{{", "muse-policy: 无模板花括号");
+mustContain(readFileSync(join(ROOT, "prompts/muse-policy-1.3.md"), "utf8"), "Agent Deployment Operating Policy", "muse-policy: 上游标题在位");
+mustContain(readFileSync(join(ROOT, "prompts/muse-policy-1.3.md"), "utf8"), "6.2 Disclosure or compilation", "muse-policy: 余下两条已重编号为 6.1 / 6.2");
+{
+  const mp = readFileSync(join(ROOT, "prompts/muse-policy-1.3.md"), "utf8");
+  check(!mp.includes("Sexual content involving minors") && !mp.includes("sexual exploitation or abuse of children"),
+    "muse-policy: 未成年性内容与 CSAM 两条已删除");
+}
+// qwen（2026-10-28 收编上游 qwen-3.8.md + 删未成年两条）
+check(readFileSync(join(ROOT, "prompts/qwen-3.8.md"), "utf8").length > 12000, "载荷文件: qwen-3.8.md 存在且非空");
+mustAbsent(readFileSync(join(ROOT, "prompts/qwen-3.8.md"), "utf8"), "${", "qwen: 无宿主模板变量");
+mustAbsent(readFileSync(join(ROOT, "prompts/qwen-3.8.md"), "utf8"), "{{", "qwen: 无模板花括号");
+mustContain(readFileSync(join(ROOT, "prompts/qwen-3.8.md"), "utf8"), "Assistant Operating Specification", "qwen: 上游标题在位");
+mustContain(readFileSync(join(ROOT, "prompts/qwen-3.8.md"), "utf8"), "These three are the complete set of prohibitions", "qwen: 计数已改为 three");
+mustContain(readFileSync(join(ROOT, "prompts/qwen-3.8.md"), "utf8"), "only the three listed cases do", "qwen: Section 7 计数已改为 three");
+{
+  const q = readFileSync(join(ROOT, "prompts/qwen-3.8.md"), "utf8");
+  check(!q.includes("under 18") && !q.includes("sexual exploitation or abuse of children"),
+    "qwen: 未成年性内容与 CSAM 两条已删除");
+  check(q.includes("radiological, nuclear, or high-yield explosive"), "qwen: CBRN 条保留");
+  check(!q.includes("You are Qwen"), "qwen: 无 Qwen 身份声明（未采用 3.7 那份人格稿）");
 }
 // glm53cn（自撰中文稿）：文件存在、非空、无模板变量
 check(readFileSync(join(ROOT, "prompts/glm53-cn-sandbox.md"), "utf8").length > 500, "载荷文件: glm53-cn-sandbox.md 存在且非空");
@@ -515,7 +591,10 @@ mustContain(alignSrc, 'source?.kind !== "agent-instructions"', "提示词对齐:
 mustContain(alignSrc, "alignText", "提示词对齐: 纯函数可离线验证");
 mustContain(indexSrc, 'from "./align.js"', "提示词对齐: index.js 接入");
 mustContain(indexSrc, "ALIGN_FIELD", "提示词对齐: align 配置字段常量");
-mustContain(indexSrc, "installAlign(ctx, () => readState().align)", "提示词对齐: 开关回调接入注入管线");
+// 2026-10-27：installAlign 增加第三参（personaPrefix 三档提供者），调用改为多行
+mustContain(indexSrc, "() => readState().align", "提示词对齐: 开关回调接入注入管线");
+mustContain(indexSrc, "installAlign(", "提示词对齐: installAlign 调用在位");
+mustContain(indexSrc, "mode: st.personaPrefix, text: st.personaPrefixText", "提示词对齐: personaPrefix 三档已传给 align 层");
 mustContain(indexSrc, "align: alignField()", "提示词对齐: 表单面 schema 含 align");
 check(Array.isArray(pkg.files) && pkg.files.includes("align.js"), "package.json files 含 align.js");
 check(pkg.exports?.["./align"] === "./align.js", "align 子路径导出");

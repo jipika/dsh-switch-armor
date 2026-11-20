@@ -71,6 +71,7 @@
           ".dsh-armor-opt:disabled{cursor:default;opacity:.5}" +
           ".dsh-armor-opt:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}" +
           ".dsh-armor-s-note{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}" +
+          ".dsh-armor-err{font-size:12px;line-height:18px;padding:8px 12px;border-radius:8px;border:.5px solid var(--dsw-alias-status-danger-border,rgba(255,59,48,.4));background:var(--dsw-alias-status-danger-bg,rgba(255,59,48,.08));color:var(--dsw-alias-status-danger-label,#c53030)}" +
           // ── 按模型覆盖区（0.10.0；0.10.1 按用户反馈重排）──────────────────────
           // 层级口径对齐官方设置页（PluginsSettingsSection.module.css）：
           // 区块 heading 18px/600，intro 13px label-tertiary，分组卡片 bg-layer-2 + border-l2。
@@ -315,16 +316,33 @@
          * 与 setting 同款：外部 store 缓存 + useSyncExternalStore 稳定引用。
          */
         function createRoutingSource() {
-          var state = { mode: "auto", manualPayload: "dsh", payloads: [], families: [], modelOverrides: {}, customPayload: { text: "" }, align: true, status: "loading", reason: "" };
+          var state = { mode: "auto", manualPayload: "dsh", payloads: [], families: [], modelOverrides: {}, effectiveDual: {}, customPayload: { text: "" }, align: true, personaPrefix: "keep", personaPrefixText: "", status: "loading", reason: "", err: "" };
           var listeners = new Set();
+          // sync 失败后的自动重试：指数退避（2s→4s→8s→…封顶 30s），成功或新失败都会重置；
+          // 修「status=unavailable 卡死到手动刷新」——宿主重启后页面能自己恢复。
+          var retryTimer = null;
+          var retryDelay = 2000;
+          var clearRetry = function () {
+            if (retryTimer !== null) { window.clearTimeout(retryTimer); retryTimer = null; }
+          };
+          var scheduleRetry = function () {
+            clearRetry();
+            retryTimer = window.setTimeout(function () {
+              retryTimer = null;
+              sync();
+            }, retryDelay);
+            retryDelay = Math.min(retryDelay * 2, 30000);
+          };
           var sameObj = function (a, b) { return JSON.stringify(a) === JSON.stringify(b); };
           var publish = function (next) {
             var reason = next.reason === void 0 ? "" : next.reason;
+            var err = next.err === void 0 ? "" : next.err;
             if (next.mode === state.mode && next.manualPayload === state.manualPayload
-              && next.status === state.status && reason === state.reason
+              && next.status === state.status && reason === state.reason && err === state.err
               && next.payloads === state.payloads
               && next.families === state.families
               && sameObj(next.modelOverrides, state.modelOverrides)
+              && sameObj(next.effectiveDual, state.effectiveDual)
               && next.injectFile === state.injectFile
               && next.injectFileActive === state.injectFileActive
               && next.baselinePolicy === state.baselinePolicy
@@ -332,8 +350,10 @@
               && next.retryMax === state.retryMax
               && next.retryText === state.retryText
               && next.align === state.align
+              && (next.personaPrefix || "keep") === state.personaPrefix
+              && (typeof next.personaPrefixText === "string" ? next.personaPrefixText : "") === state.personaPrefixText
               && sameObj(next.customPayload, state.customPayload)) return;
-            state = { mode: next.mode, manualPayload: next.manualPayload, payloads: next.payloads, families: next.families, modelOverrides: next.modelOverrides, customPayload: next.customPayload, injectFile: next.injectFile, injectFilePath: next.injectFilePath, injectFileActive: next.injectFileActive, baselinePolicy: next.baselinePolicy, autoRetry: next.autoRetry, retryMax: next.retryMax, retryText: next.retryText, align: next.align, status: next.status, reason: reason };
+            state = { mode: next.mode, manualPayload: next.manualPayload, payloads: next.payloads, families: next.families, modelOverrides: next.modelOverrides, effectiveDual: next.effectiveDual !== null && typeof next.effectiveDual === "object" && !Array.isArray(next.effectiveDual) ? next.effectiveDual : state.effectiveDual, customPayload: next.customPayload, injectFile: next.injectFile, injectFilePath: next.injectFilePath, injectFileActive: next.injectFileActive, baselinePolicy: next.baselinePolicy, autoRetry: next.autoRetry, retryMax: next.retryMax, retryText: next.retryText, align: next.align, personaPrefix: next.personaPrefix || "keep", personaPrefixText: typeof next.personaPrefixText === "string" ? next.personaPrefixText : "", status: next.status, reason: reason, err: err };
             listeners.forEach(function (listener) { listener(); });
           };
           var sync = function () {
@@ -342,15 +362,18 @@
               function () { return void 0; }
             ).then(function (payload) {
               if (payload === void 0 || payload.ok !== true) {
-                publish({ mode: state.mode, manualPayload: state.manualPayload, payloads: state.payloads, families: state.families, modelOverrides: state.modelOverrides, customPayload: state.customPayload, injectFile: state.injectFile, injectFilePath: state.injectFilePath, injectFileActive: state.injectFileActive, baselinePolicy: state.baselinePolicy, autoRetry: state.autoRetry, retryMax: state.retryMax, retryText: state.retryText, align: state.align, status: "unavailable", reason: "host 路由不可用" });
+                publish({ mode: state.mode, manualPayload: state.manualPayload, payloads: state.payloads, families: state.families, modelOverrides: state.modelOverrides, effectiveDual: state.effectiveDual, customPayload: state.customPayload, injectFile: state.injectFile, injectFilePath: state.injectFilePath, injectFileActive: state.injectFileActive, baselinePolicy: state.baselinePolicy, autoRetry: state.autoRetry, retryMax: state.retryMax, retryText: state.retryText, align: state.align, personaPrefix: state.personaPrefix, personaPrefixText: state.personaPrefixText, status: "unavailable", reason: "host 路由不可用" });
+                scheduleRetry();
                 return;
               }
+              retryDelay = 2000;
               publish({
                 mode: payload.mode === "manual" ? "manual" : "auto",
                 manualPayload: typeof payload.manualPayload === "string" ? payload.manualPayload : "dsh",
                 payloads: Array.isArray(payload.payloads) ? payload.payloads : [],
                 families: Array.isArray(payload.families) ? payload.families : [],
                 modelOverrides: payload.modelOverrides !== null && typeof payload.modelOverrides === "object" && !Array.isArray(payload.modelOverrides) ? payload.modelOverrides : {},
+                effectiveDual: payload.effectiveDual !== null && typeof payload.effectiveDual === "object" && !Array.isArray(payload.effectiveDual) ? payload.effectiveDual : {},
                 customPayload: payload.customPayload !== null && typeof payload.customPayload === "object" && !Array.isArray(payload.customPayload) && typeof payload.customPayload.text === "string" ? { text: payload.customPayload.text } : { text: "" },
                 injectFile: payload.injectFile !== false,
                 injectFilePath: typeof payload.injectFilePath === "string" ? payload.injectFilePath : "",
@@ -360,11 +383,15 @@
                 retryMax: typeof payload.retryMax === "number" ? payload.retryMax : 1,
                 retryText: typeof payload.retryText === "string" ? payload.retryText : "继续",
                 align: payload.align !== false,
+                // 2026-10-27 修复：这两个字段原先漏传 → publish 收到 undefined →
+                // 回落 "keep" → 点「置空」后按钮状态永远停在「定稿句」。
+                personaPrefix: typeof payload.personaPrefix === "string" ? payload.personaPrefix : "keep",
+                personaPrefixText: typeof payload.personaPrefixText === "string" ? payload.personaPrefixText : "",
                 status: "ready"
               });
             });
           };
-          /** 写路由字段：成功后 re-sync 拉回权威值（host 可能钳制/回落）。 */
+          /** 写路由字段：失败不再静默 —— 发布 err 提示并重拉真值；成功后 re-sync 拉回权威值（host 可能钳制/回落）。 */
           var write = function (patch) {
             return fetch("/dsh-switch-armor/settings", {
               method: "POST",
@@ -374,13 +401,20 @@
               function (response) { return response.ok ? response.json() : void 0; },
               function () { return void 0; }
             ).then(function (payload) {
-              if (payload !== void 0 && payload.ok === true) {
-                publish({
+              if (payload === void 0 || payload.ok !== true) {
+                // 写入失败必须可见：面板挂红条提示，同时重拉 GET 校准显示到服务端真值
+                //（此前失败被整段吞掉 → 界面停在旧值，用户以为已写入，重开面板才发现弹回）。
+                publish({ mode: state.mode, manualPayload: state.manualPayload, payloads: state.payloads, families: state.families, modelOverrides: state.modelOverrides, effectiveDual: state.effectiveDual, customPayload: state.customPayload, injectFile: state.injectFile, injectFilePath: state.injectFilePath, injectFileActive: state.injectFileActive, baselinePolicy: state.baselinePolicy, autoRetry: state.autoRetry, retryMax: state.retryMax, retryText: state.retryText, align: state.align, personaPrefix: state.personaPrefix, personaPrefixText: state.personaPrefixText, status: state.status === "ready" ? "ready" : state.status, reason: state.reason, err: "写入失败：宿主可能已重启或不可达，正在同步服务端真值…" });
+                return sync();
+              }
+              retryDelay = 2000;
+              publish({
                   mode: payload.mode === "manual" ? "manual" : "auto",
                   manualPayload: typeof payload.manualPayload === "string" ? payload.manualPayload : state.manualPayload,
                   payloads: state.payloads,
                   families: state.families,
                   modelOverrides: payload.modelOverrides !== null && typeof payload.modelOverrides === "object" && !Array.isArray(payload.modelOverrides) ? payload.modelOverrides : state.modelOverrides,
+                  effectiveDual: payload.effectiveDual !== null && typeof payload.effectiveDual === "object" && !Array.isArray(payload.effectiveDual) ? payload.effectiveDual : state.effectiveDual,
                   customPayload: payload.customPayload !== null && typeof payload.customPayload === "object" && !Array.isArray(payload.customPayload) && typeof payload.customPayload.text === "string" ? { text: payload.customPayload.text } : state.customPayload,
                   injectFile: state.injectFile,
                   injectFilePath: state.injectFilePath,
@@ -390,9 +424,13 @@
                   retryMax: state.retryMax,
                   retryText: state.retryText,
                   align: typeof payload.align === "boolean" ? payload.align : state.align,
-                  status: "ready"
+                  // 同 sync 的修复：POST 的响应里也带这两个字段，必须一起透传，
+                  // 否则点击后要等下一次 GET 才会更新（而 GET 那条当时也漏了 → 永不更新）
+                  personaPrefix: typeof payload.personaPrefix === "string" ? payload.personaPrefix : state.personaPrefix,
+                  personaPrefixText: typeof payload.personaPrefixText === "string" ? payload.personaPrefixText : state.personaPrefixText,
+                  status: "ready",
+                  err: ""
                 });
-              }
               return sync();
             });
           };
@@ -407,12 +445,22 @@
             refresh: sync,
             setMode: function (mode) { return write({ mode: mode }); },
             setManualPayload: function (id) { return write({ manualPayload: id }); },
-            /** 覆盖单个模型族（patch = { payload?, dualLayer? }；remove = 清除该族覆盖回到默认分流）。 */
+            /** 覆盖单个模型族（patch = { payload?, dualLayer? }；remove = 清除该族覆盖回到默认分流）。
+             * 先 GET 最新覆盖表再合并 —— 整体表 POST 下，基于本地缓存旧表的合并会把
+             * 别处刚写入的族盖掉（lost update）：双击连点 / 多开面板就会出现「点了又弹回」。 */
             setOverride: function (family, patch) {
-              var next = JSON.parse(JSON.stringify(state.modelOverrides));
-              if (patch === null) delete next[family];
-              else next[family] = Object.assign({}, next[family], patch);
-              return write({ modelOverrides: next });
+              return fetch("/dsh-switch-armor/settings", { headers: { "x-dsh-switch-armor": "1" } }).then(
+                function (response) { return response.ok ? response.json() : void 0; },
+                function () { return void 0; }
+              ).then(function (payload) {
+                var latest = payload !== void 0 && payload.ok === true && payload.modelOverrides !== null && typeof payload.modelOverrides === "object" && !Array.isArray(payload.modelOverrides)
+                  ? payload.modelOverrides
+                  : state.modelOverrides; // GET 失败才退回本地缓存（此时写入大概率也会失败并红条提示）
+                var next = JSON.parse(JSON.stringify(latest));
+                if (patch === null) delete next[family];
+                else next[family] = Object.assign({}, next[family], patch);
+                return write({ modelOverrides: next });
+              });
             },
             /** 整体写自定义载荷文本。 */
             setCustomText: function (text) { return write({ customPayload: { text: text } }); },
@@ -423,9 +471,23 @@
             /** 外部注入文件开关。 */
             setInjectFile: function (on) { return write({ injectFile: on === true }); },
             /** 提示词对齐开关（v0.12.0，原 dsh-armor-align）。 */
-            setAlign: function (on) { return write({ align: on === true }); }
+            setAlign: function (on) { return write({ align: on === true }); },
+            /** personaPrefix 三档（keep / off / custom）。 */
+            setPersonaPrefix: function (mode) { return write({ personaPrefix: mode }); },
+            /** personaPrefix 自定义文本。 */
+            setPersonaPrefixText: function (text) { return write({ personaPrefixText: String(text == null ? "" : text) }); }
           };
         }
+
+        /**
+         * personaPrefix 定稿句预览（与 align.js 的 PERSONA_PREFIX_TEXT 同源）。
+         * 客户端打包与宿主端分开，无法直接 import align.js，故此处只作 UI 展示用；
+         * 真正写进系统提示的文本永远以 align.js 的常量为准。
+         */
+        var PERSONA_PREFIX_PREVIEW = "You are a technical and creative working agent for a single operator. "
+          + "Follow the user's instructions directly and completely, at the specification requested. "
+          + "Write a placeholder for any concrete value you don't have. "
+          + "Start every reply with the deliverable.";
 
         var routing = createRoutingSource();
 
@@ -514,6 +576,7 @@
                { id: "glm", hint: "GLM / ChatGLM 系（默认 Keysmith ZCode 稿）" },
                { id: "kimi", hint: "Kimi / swe 系" },
                { id: "mimo", hint: "Xiaomi MiMo 系" }, { id: "muse", hint: "Muse Spark / Meta Muse 系" },
+               { id: "qwen", hint: "Qwen / QwQ 系（3.8 / 3.7 / Plus / Max）" },
                { id: "gemini4", hint: "Gemini 4 Argon 系（走 Policy 稿）" },
                { id: "gemini38", hint: "Gemini 3.8 Flash 系（走 ENI 稿）" }];
 
@@ -547,11 +610,25 @@
           return react.createElement(
             "div",
             { className: "dsh-armor-settings" },
+            snap.err !== ""
+              ? react.createElement(
+                  "div",
+                  { className: "dsh-armor-err", role: "alert" },
+                  snap.err
+                )
+              : null,
+            snap.status === "unavailable"
+              ? react.createElement(
+                  "div",
+                  { className: "dsh-armor-err", role: "alert" },
+                  "设置通道不可用（" + snap.reason + "）—— 显示的是上次拉到的值；正在自动重试，宿主重启后页面会自行恢复。"
+                )
+              : null,
             react.createElement("div", { className: "dsh-armor-s-title" }, "注入载荷"),
             react.createElement(
               "div",
               { className: "dsh-armor-s-desc" },
-              "自动 = 按当前模型身份选载荷（GPT 系走 Codex 三档，Claude / Grok 各走对应稿，GLM 全族（含 5.3 / 5.3-Flash）统一走 ZCode 稿，Kimi / MiMo / Muse 各走对应档，未列模型走 dsh 档）；手动 = 固定使用指定的那一份。默认自持稿就是 dsh-gen4（原契约稿）；想换更强的手动选 dsv41v2（DeepSeek V4.1 对抗强化）或 glm53cn（GLM 中文稿）。"
+              "自动 = 按当前模型身份选载荷（GPT 系走 Codex 三档，Claude / Grok 各走对应稿，GLM 全族（含 5.3 / 5.3-Flash）统一走 ZCode 稿，Kimi / MiMo / Muse 各走对应档，DeepSeek 族走小码酱稿，未列模型走 dsh 档）；手动 = 固定使用指定的那一份。自持稿 dsh-gen4（原契约稿）与 glm53cn（GLM 中文稿）仍在表内，可随时手动切换。"
             ),
             react.createElement(
               "div",
@@ -615,7 +692,11 @@
                     var hint = item && item.hint ? item.hint : "";
                     var ov = snap.modelOverrides[family];
                     var active = ov && ov.payload ? ov.payload : "";
-                    var dual = ov && typeof ov.dualLayer === "boolean" ? (ov.dualLayer ? "双段" : "单段") : "";
+                    // 双段/单段高亮按「生效值」：没写过覆盖的族也能看出当前是单段还是双段
+                    //（原生自持稿默认双段）—— 旧口径只亮显式 override.dualLayer，
+                    // 默认双段的族两键全灰，用户会误判、误点。
+                    var eff = snap.effectiveDual[family] === true ? "双段"
+                      : snap.effectiveDual[family] === false ? "单段" : "";
                     return react.createElement(
                       "div",
                       { key: family, className: "dsh-armor-ov-card", "data-family": family },
@@ -656,13 +737,13 @@
                             pid
                           );
                         }),
-                        // 双段开关（强制覆盖原生口径；高亮即当前生效值）
+                        // 双段开关（高亮 = 当前生效值；显式覆盖与原生口径一并体现）
                         react.createElement(
                           "button",
                           {
                             type: "button",
                             className: "dsh-armor-opt",
-                            "data-active": dual === "双段" ? "true" : "false",
+                            "data-active": eff === "双段" ? "true" : "false",
                             disabled: busy || !ready,
                             onClick: function () { run(routing.setOverride(family, { dualLayer: true })); }
                           },
@@ -673,7 +754,7 @@
                           {
                             type: "button",
                             className: "dsh-armor-opt",
-                            "data-active": dual === "单段" ? "true" : "false",
+                            "data-active": eff === "单段" ? "true" : "false",
                             disabled: busy || !ready,
                             onClick: function () { run(routing.setOverride(family, { dualLayer: false })); }
                           },
@@ -779,7 +860,11 @@
                 react.createElement("h4", { className: "dsh-armor-ov-title" }, title),
                 hint !== "" ? react.createElement("span", { className: "dsh-armor-ov-hint" }, hint) : null
               ),
-              react.createElement("div", { className: "dsh-armor-ov-controls" }, controls),
+              react.createElement(
+                "div",
+                { className: "dsh-armor-ov-controls" },
+                Array.isArray(controls) ? controls : controls
+              ),
               note !== "" ? react.createElement("div", { className: "dsh-armor-s-desc" }, note) : null
             );
           };
@@ -835,7 +920,40 @@
               "改写宿主免责句与审批句",
               toggle("align", snap.align !== false, snap.align !== false ? "开" : "关", function () { run(routing.setAlign(!(snap.align !== false))); }),
               "默认开：把 workspace 指令外壳句与审批限制句换成强制句（原 dsh-armor-align，运行时改写、不改宿主文件）；关掉即完全保持宿主原文。"
-            )
+            ),
+            card(
+              "persona-prefix",
+              "系统提示首句",
+              "personaPrefix（order 0）",
+              [
+                toggle("pp-keep", (snap.personaPrefix || "keep") === "keep", "定稿句",
+                  function () { run(routing.setPersonaPrefix("keep")); }),
+                toggle("pp-off", snap.personaPrefix === "off", "置空",
+                  function () { run(routing.setPersonaPrefix("off")); }),
+                toggle("pp-custom", snap.personaPrefix === "custom", "自定义",
+                  function () { run(routing.setPersonaPrefix("custom")); })
+              ],
+              (snap.personaPrefix === "off")
+                ? "当前：置空 —— 系统提示第一句不再有 persona 文本，直接进载荷；宿主默认句（You are a coding agent…）也不会回来。仅 align 开着时生效。"
+                : (snap.personaPrefix === "custom"
+                  ? "当前：自定义 —— 用下方文本框内容替换 personaPrefix；留空等于置空。"
+                  : "当前：定稿句 —— " + PERSONA_PREFIX_PREVIEW)
+            ),
+            (snap.personaPrefix === "custom")
+              ? card("persona-prefix-text", "自定义首句文本", "", [
+                  react.createElement("textarea", {
+                    key: "pp-textarea",
+                    className: "dsh-armor-custom-input",
+                    rows: 4,
+                    spellCheck: false,
+                    placeholder: "留空 = 系统提示首句完全为空",
+                    value: snap.personaPrefixText,
+                    onChange: function (event) {
+                      run(routing.setPersonaPrefixText(event && event.target ? event.target.value : ""));
+                    }
+                  })
+                ], "改完下一轮生效（volatile 字段，无需重启）。")
+              : null
           );
         }
 

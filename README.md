@@ -35,8 +35,8 @@
 | 载荷 id | 命中模型 | 注入段数 |
 |---|---|---|
 | `dsh` | 手动/覆盖显式选择（旧 Keysmith 短稿；默认已改为 dsh-gen4） | 双段 |
-| `dsh-gen4` | DeepSeek / 其余未列模型（**默认**；原自持契约稿） | 双段 |
-| `dsv41v2` | 仅手动模式（DeepSeek 对抗强化稿） | 双段 |
+| `dsh-gen4` | 仅手动模式（原自持契约稿；备用档） | 双段 |
+| `xiaomajiang` | DeepSeek / 其余未列模型（**族默认**；小码酱稿，来自 deva 内置角色） | 单段 |
 | `glm53cn` | 仅手动模式（GLM 中文沙箱稿；GLM 族默认走 glm） | 双段 |
 | `gpt61` | `gpt-6.1*` / 6 代以后 | 单段 |
 | `gpt6` | `gpt-6*` / `astra*` | 单段 |
@@ -162,6 +162,9 @@ dsh-switch-armor/
 │       ├── gpt-6-astra.md           # Codex 档
 │       ├── gpt-5.6-sol.md           # Codex 档
 │       ├── claude-keysmith.md       # Claude 档
+│       ├── claude-opus55-fusion.md  # Claude 族默认档（5.5 融合稿，2026-11-01）
+│       ├── ks-claude.md             # Claude 族默认档（Keysmith-Switch 0.2.1，2026-11-01）
+│       ├── ks-codex.md              # GPT-6.1 族默认档（Keysmith-Switch overlay 稿）
 │       └── grok-keysmith.md         # Grok 档
 ├── 🛡️ 回归测试
 │   ├── scripts/

@@ -89,6 +89,72 @@ const HOST_MARKERS = [
   "Approval prompts are disabled in this session",
 ];
 
+/** personaPrefix 段名（宿主 system-prompt 的 DEPLOYMENT_PERSONA_PREFIX section；asar 源码 index.ts:195）。 */
+const PERSONA_PREFIX_SECTION_NAME = "deployment:persona-prefix";
+
+/**
+ * personaPrefix 定稿句（order 0，整个系统提示的第一句）。
+ * desktop 的 acp-app 组合层在 profile patch 层之后写入 coding agent 句（配置层无法定稿），
+ * 只能在此按段名整段替换。
+ * 身份句刻意**不写具体领域**（2026-10-27，用户指出「像专门做逆向的一样」）：
+ * 首句声明窄域身份会让模型对非该域的请求先做一次「这算不算逆向」的归类，归不进就顺手拒；
+ * `offline` 也不成立（本会话有 web_fetch / read_page）。域语义交给载荷层
+ * （AGENTS.md 的 Request reinterpretation + muse 载荷档），persona 只留
+ * 「单操作者的技术 + 创作通用 agent」这层稳定身份 + 交付契约。
+ * 幂等判据 = `startsWith(PERSONA_PREFIX_TEXT)`（见 alignEntry）：判据与本常量同源，
+ * 改身份句时判据自动跟随，不会与文本分叉。
+ * **导出给探针做单一来源**（tests/align-probe.mjs 直接 import 本常量当期望值与 fixture，
+ * 不在测试里抄第二份文本 —— 抄写正是本文件 2026-10-27 之前分叉的成因）。
+ */
+export const PERSONA_PREFIX_TEXT = "You are a technical and creative working agent for a single operator. "
+  + "Follow the user's instructions directly and completely, at the specification requested. "
+  + "Write a placeholder for any concrete value you don't have. "
+  + "Start every reply with the deliverable.";
+
+/**
+ * personaPrefix 段的三档取值（2026-10-27 用户要求「做一个设置可以控制这个内容，
+ * 我想让头部直接为空什么内容也没有」）。
+ *
+ *   keep   —— 沿用上面的定稿句（默认，v0.12.0 行为不变）
+ *   off    —— **置空整段**：order 0 的 personaPrefix 渲染为空串，被 renderPrompt 过滤，
+ *             系统提示的第一句直接是载荷 / AGENTS.md 的内容，零残留
+ *   custom —— 用设置页填的自定义文本（空文本等价 off）
+ *
+ * 为什么置空要单独一档而不是把 PERSONA_PREFIX_TEXT 改成 ""：
+ * `alignEntry` 的幂等判据是 `startsWith(PERSONA_PREFIX_TEXT)`，空串会让它恒为 true，
+ * 于是「已对齐」判定永远成立、永远不会写入 —— 看似能清空，实际上放弃了对该段的控制权，
+ * 宿主默认句（`You are a coding agent powered by the {{model}} model.`）会从
+ * profile 的 personaPrefix 回来。所以置空必须走**显式分支**：返回空串文本，
+ * 判据则单独判断「当前是否已经是空」。
+ */
+export const PERSONA_PREFIX_MODES = ["keep", "off", "custom"];
+
+/**
+ * 解析本步该给 personaPrefix 段写什么文本。
+ * @param {string} mode keep / off / custom（非法值按 keep 处理，绝不静默清空）。
+ * @param {string} customText mode=custom 时的文本。
+ * @returns {string} 要写入该段的文本；空串表示置空。
+ */
+export function resolvePersonaPrefixText(mode, customText) {
+  const m = typeof mode === "string" ? mode.trim() : "";
+  if (m === "off") return "";
+  if (m === "custom") return typeof customText === "string" ? customText : "";
+  return PERSONA_PREFIX_TEXT;
+}
+
+/**
+ * 该段是否已是目标状态（幂等的判据）。
+ * 置空模式单独判 `text === ""`，不能复用 startsWith（空串恒真，会误判）。
+ * @param {string} text 段当前文本。
+ * @param {string} target 目标文本。
+ * @returns {boolean} 是否无需改写。
+ */
+export function personaPrefixSettled(text, target) {
+  if (typeof text !== "string") return false;
+  if (target === "") return text === "";
+  return text === target;
+}
+
 /**
  * 就地把宿主削弱句换成强制句；不匹配时原样返回（零副作用）。
  * 幂等：替换后的文本不再包含可命中的完整宿主原句。
@@ -129,8 +195,25 @@ export function alignMessage(message) {
  * @param {object} entry 装配条目。
  * @returns {object} 原条目或改写后的新条目。
  */
-function alignEntry(entry) {
-  if (entry === null || typeof entry !== "object" || typeof entry.text !== "string") return entry;
+function alignEntry(entry, personaPrefixTarget) {
+  if (entry === null || typeof entry !== "object") return entry;
+  // personaPrefix 段：acp-app 组合层在 profile patch 层之后写入 coding agent 句，
+  // 配置层（bundle/profile）无法定稿，此处按段名整段替换为本插件定稿句。
+  // 幂等判据用 `startsWith(PERSONA_PREFIX_TEXT)` 而非手写子串：
+  //   ① 判据与替换值同源，改身份句时判据自动跟随，不会再出现锚点与文本分叉；
+  //   ② 整句前缀比 includes(片段) 强 —— 某个 preset 的 persona 恰好含交付契约句时
+  //      不会被误判成「已定稿」而跳过替换（失败不报错、极难定位）；
+  //   ③ 旧句（含 offline reverse engineering）不匹配 → 会被替换一次，正是本次迁移路径。
+  // 命中即整段赋值、非拼接，故不会逐轮滚长。
+  if (entry.name === PERSONA_PREFIX_SECTION_NAME) {
+    // 目标文本由调用方注入（keep / off / custom 三档，见 resolvePersonaPrefixText）。
+    // 未传 target 时退回 v0.12.0 的定稿句行为，保证既有探针与老调用路径不变。
+    const target = typeof personaPrefixTarget === "string" ? personaPrefixTarget : PERSONA_PREFIX_TEXT;
+    if (typeof entry.text !== "string") return entry;
+    if (personaPrefixSettled(entry.text, target)) return entry;
+    return { ...entry, text: target };
+  }
+  if (typeof entry.text !== "string") return entry;
   const next = alignText(entry.text);
   return next === entry.text ? entry : { ...entry, text: next };
 }
@@ -140,10 +223,11 @@ function alignEntry(entry) {
  * @param {object} settled systemPrompt 装配结果。
  * @returns {object} 原对象或改写后的新对象。
  */
-export function alignAssembly(settled) {
+export function alignAssembly(settled, personaPrefixTarget) {
   if (settled === null || typeof settled !== "object") return settled;
-  const sections = Array.isArray(settled.sections) ? settled.sections.map(alignEntry) : settled.sections;
-  const contexts = Array.isArray(settled.contexts) ? settled.contexts.map(alignEntry) : settled.contexts;
+  const map = (entry) => alignEntry(entry, personaPrefixTarget);
+  const sections = Array.isArray(settled.sections) ? settled.sections.map(map) : settled.sections;
+  const contexts = Array.isArray(settled.contexts) ? settled.contexts.map(map) : settled.contexts;
   const changedSections = Array.isArray(sections) && sections.some((entry, index) => entry !== settled.sections[index]);
   const changedContexts = Array.isArray(contexts) && contexts.some((entry, index) => entry !== settled.contexts[index]);
   if (!changedSections && !changedContexts) return settled;
@@ -158,7 +242,7 @@ export function alignAssembly(settled) {
  * @param {object} ctx 插件上下文（cordis Context，inject 已含 systemPrompt）。
  * @param {() => boolean} isEnabled 当前开关值提供者。
  */
-export function installAlign(ctx, isEnabled) {
+export function installAlign(ctx, isEnabled, personaPrefixProvider) {
   // 没有事件通道的假 ctx（离线探针）直接跳过：只测纯函数，不装监听器。
   if (ctx === null || typeof ctx !== "object" || typeof ctx.on !== "function") return;
   /** 开关读取失败按关闭处理（绝不因为读配置抛错而改写提示词）。 */
@@ -167,6 +251,19 @@ export function installAlign(ctx, isEnabled) {
       return isEnabled() === true;
     } catch {
       return false;
+    }
+  };
+  /**
+   * 本步该写入 personaPrefix 的目标文本（keep / off / custom 三档，见 resolvePersonaPrefixText）。
+   * 读取失败按 keep 处理 —— 绝不因为读配置抛错而把系统提示首句清成空。
+   */
+  const personaTarget = () => {
+    try {
+      const v = typeof personaPrefixProvider === "function" ? personaPrefixProvider() : undefined;
+      if (v === null || typeof v !== "object") return PERSONA_PREFIX_TEXT;
+      return resolvePersonaPrefixText(v.mode, v.text);
+    } catch {
+      return PERSONA_PREFIX_TEXT;
     }
   };
   /** 探针的假 ctx 可能没有 effect：没有就直挂。 */
@@ -181,14 +278,17 @@ export function installAlign(ctx, isEnabled) {
         async (assembly, _context, next) => {
           const settled = await next();
           if (!enabled()) return settled;
-          const out = alignAssembly(settled);
+          const out = alignAssembly(settled, personaTarget());
           if (!tracedAssemble) {
             tracedAssemble = true;
             const count = (before, after) => (Array.isArray(before) && Array.isArray(after)
               ? after.filter((entry, index) => entry !== before[index]).length
               : 0);
+            const sectionsList = Array.isArray(out?.sections) ? out.sections : [];
+            const personaEntry = sectionsList.find((entry) => entry?.name === PERSONA_PREFIX_SECTION_NAME);
             trace(`assemble sections=${settled?.sections?.length ?? 0} contexts=${settled?.contexts?.length ?? 0}`
-              + ` rewrittenSections=${count(settled?.sections, out?.sections)} rewrittenContexts=${count(settled?.contexts, out?.contexts)}`);
+              + ` rewrittenSections=${count(settled?.sections, out?.sections)} rewrittenContexts=${count(settled?.contexts, out?.contexts)}`
+              + ` personaPrefix=${personaEntry ? (personaEntry.text === personaTarget() ? (personaEntry.text === "" ? "blank" : "aligned") : `host:${String(personaEntry.text ?? "").slice(0, 48)}`) : "absent"}`);
           }
           return out;
         },
@@ -214,7 +314,8 @@ export function installAlign(ctx, isEnabled) {
       proto[key] = function patchedBySwitchArmorAlign(...args) {
         const out = original.apply(this, args);
         if (!enabled()) return out;
-        return out !== null && typeof out?.then === "function" ? out.then(alignAssembly) : alignAssembly(out);
+        const run = (v) => alignAssembly(v, personaTarget());
+        return out !== null && typeof out?.then === "function" ? out.then(run) : run(out);
       };
       trace(`patched systemPrompt.${key}`);
     }

@@ -26,6 +26,11 @@
     defaultModel」这条链。探针里有三条回归锁钉死这个顺序。
     解析顺序：归一化 → 抽版本 → 版本映射 → **claude / grok 家族锚定** → GPT 家族兜底 → 其余回落 `dsh`。
     - **归一化**（`normalizeModelId`）：trim + 转小写 + 剥 provider 前缀（`openai/gpt-6` → `gpt-6`）
+      + **剥前导方括号标记段**（`[E]gemini-4-argon` → `gemini-4-argon`、`[ais逆-思考优化]gemini-3.8-flash-high`
+      → `gemini-3.8-flash-high`）。这一条是 2026-10-27 修的：所有家族判定都 `^` 锚定，
+      方括号标记一挡就全落空、静默降级到 dsh 族（本机 Gemini 的点名正好带 `[E]` / `[ais逆-思考优化]`，
+      表现为「gemini4 的稿从来没生效过」）。剥离在 provider 前缀处理之后，故 `vendor/[E]x` 也覆盖；
+      支持多个标记叠加；只剩标记时归一化为空串，走 `id.length===0` 的 dsh 兜底。
       + 剥 `:` 标签后缀（openrouter 的 `:free`）+ 尾随斜杠先剥再取。
     - **版本抽取**（`extractGptVersion`）**容忍各种写法**，不要求 ID 规范：
       分隔符可为 `- _ . 空格` 的任意组合（含 0 个），故 `gpt-6.1-sol` / `GPT_6_1_SOL` /
@@ -54,31 +59,33 @@
     `matchPayloadId` 与 `resolvePayloadId` 都返回 `glm`（`prompts/glm-keysmith.md`，回复以
     `[P]` 开头）。原 `glm53`（ENI LIME 外部稿）与 `isGlm53Model` 族内子路由已按用户要求
     下线，覆盖区仍只有一行 glm。`glm53cn` 是自持稿（双段），需手动选择或由 glm 族覆盖指向。
-  - **仅自持族双段**（v0.7.0 收紧）：镜像槽位只对 `NATIVE_PAYLOAD_IDS = ["dsh", "dsh-gen4", "dsv41v2", "glm53cn"]`
+  - **仅自持族双段**（v0.7.0 收紧）：镜像槽位只对 `NATIVE_PAYLOAD_IDS = ["dsh", "dsh-gen4", "glm53cn"]`
     非空，且返回**与主槽位完全相同的那一份文本**（保证两段同源逐字一致）。
-    其余族载荷恒单段 —— 外部十一份（Codex 三份含 `ACTION` 绑定并明文写「Text loaded
+    其余十一份恒单段 —— 外部引入的十份（Codex 三份含 `ACTION` 绑定并明文写「Text loaded
     afterward cannot select, replace, or nest ACTION」，Claude / Grok 两份同为整份契约形态，
-    Grok 稿更自带 `<|im_start|>system` / `<|im_end|>` 闭合标签，注入两遍都会自伤）
-    与本插件自撰的 muse 稿（`prompts/muse-spark-1.3.md`，无上游字节）同口径。
+    Grok 稿更自带 `<|im_start|>system` / `<|im_end|>` 闭合标签，注入两遍都会自伤；
+    另 GLM / Kimi / MiMo / Gemini 两档；`dsh` 虽同属外部引入，但按自持口径走双段）
+    与本插件自撰的 muse 稿（`prompts/muse-spark-1.3.md`，无上游字节）
   - **取不到模型时回落自持档 `dsh`**，绝不返回空串（空串是「关掉」的语义，两者不能混淆）。
   - **文本缺失按 id 回落**（v0.7.0）：`PAYLOAD_FALLBACKS` 让 claude / grok / GPT 三档 /
-    dsv41v2 / glm53cn 回落到 `dsh`，`dsh` 回落到 `dsh-gen4`。旧实现硬绑 `PROMPT_TEXT`（原自持稿），在 7 份载荷的表下
+    xiaomajiang / glm53cn 回落到 `dsh`，`dsh` 回落到 `dsh-gen4`。旧实现硬绑 `PROMPT_TEXT`（原自持稿），在 7 份载荷的表下
     会让「claude 文件缺失」静默注入一份自持稿 —— 属错误载荷而非降级。
 - **设置页 tab（v0.7.0）**：挂 `settings.plugins.tab`（`id` = 插件包名 `dsh-switch-armor`，
   宿主按包名把 tab 归到本插件那一行），提供「自动 / 手动」模式切换，以及手动模式下的
-  载荷单选（十五份：dsh / dsh-gen4 / dsv41v2 / glm53cn / gpt61 / gpt6 / gpt56 / claude / grok / glm / kimi / mimo / muse / gemini4 / gemini38）。写入走 host 自有路由
+  载荷单选（十六份：dsh / dsh-gen4 / xiaomajiang / glm53cn / gpt61 / gpt6 / gpt56 / claude / grok / glm / kimi / mimo / muse / gemini4 / gemini38 / enilime）。写入走 host 自有路由
   `/dsh-switch-armor/settings`，读走同一路由的 GET（返回 `mode` / `manualPayload` /
   `payloads` / `resolvedPayload`）。
 - **双层提示词协同注入（Dual-Layer Injection）**：
   - `switch-armor:global-system-prompt`（order 50）→ 载荷由分流决定（见上）
   - `switch-armor:dual-layer-reinforce`（order 60）→ **与主槽位同一份文本**，
-    仅自持族（`dsh` / `dsh-gen4` / `dsv41v2` / `glm53cn`）非空；其余十一份单段载荷恒为空串
+    仅自持族（`dsh` / `dsh-gen4` / `glm53cn`）非空；其余十一份单段载荷恒为空串
     （Codex 三档 / Claude / Grok / 通用 GLM / Kimi / MiMo / 自撰 Muse / Gemini 两份）。
   - 两份自持稿（`prompts/dsh-unrestricted.md` 与 `prompts/infinite-gen-4.md`）各自与
     其 `.1-flash` 镜像同源同构、SHA256 完全一致；由 `index.js` 的 `DUAL_LAYER_INJECTION`
     开关控制（**当前 `true` = 双段，同一份载荷注入两遍做权重强化**；改 `false` 即单段注入）。
   - 载荷中的 `{{...}}` 非内置变量由 `index.js` 做安全转义，避免模板解析器抛错
-    （十一份外部载荷 + muse 稿当前 0 处 `{{`，仍过同一条正则，属零成本防未来改动）。
+    （十一份外部引入载荷 + 三份自撰稿（dsh-gen4 / glm53cn / muse）
+    当前 0 处 `{{`，仍过同一条正则，属零成本防未来改动）。
 - **对话框热开关（Dialog Switch，v0.5.0）**：客户端状态条右侧的内联开关写 settings
   namespace `dsh-switch-armor` 的 `enabled` 字段（用户层 → `~/.dsh/settings.yaml`，热重载）。
   两段提示词注册为**条件段**：关闭时 `text` 求值函数返回空串，`dsh-system-prompt` 的
@@ -133,6 +140,33 @@ mimo / muse 各自同名档。**不配置任何东西**就吃到当前最好那�
 - **设置页**：「护甲防御」tab 新增「注入编排」区 —— 注入文件状态行 + baseline 三选 +
   判拒续跑开关 + 注入文件开关。读写走同一自有路由（`GET/POST /dsh-switch-armor/settings`）。
 
+## 系统提示首句控制（personaPrefix，2026-10-27）
+
+`align.js` 除改写宿主免责句外，还掌 `deployment:persona-prefix`（order 0，系统提示第一句）的定稿权。
+该段文本由设置页「系统提示首句」三档控制：
+
+| 档位 | 效果 |
+|---|---|
+| `keep`（默认） | 写入 `PERSONA_PREFIX_TEXT` 定稿句（"You are a technical and creative working agent…"） |
+| `off` | **整段置空**，首句不再有 persona 文本，直接进载荷 / AGENTS.md；宿主默认句（`You are a coding agent powered by the {{model}} model.`）也不会回来 |
+| `custom` | 用 `personaPrefixText` 里的文本；留空等价 `off` |
+
+**三条实现约束**（改这块前务必读）：
+
+1. **置空不能靠把 `PERSONA_PREFIX_TEXT` 改成空串**。`alignEntry` 的幂等判据是
+   `startsWith(PERSONA_PREFIX_TEXT)`，空串让判据恒真 → 永远判「已对齐」、永不写入，
+   等于放弃该段控制权。故置空走**显式分支**，判据由 `personaPrefixSettled(text, "")`
+   单独判 `text === ""`。
+2. **profile 必须同步**。`~/.dsh/profiles/desktop/cordis.patch.yml` 的
+   `system-prompt.config.personaPrefix` 是宿主默认句的来源；插件把它置空后，
+   若 profile 仍写着旧文本、宿主在 align 之前重新装配一次，旧句会回来。
+   本机 2026-10-27 已置为 `""`。
+3. **只有 `align` 开着时本字段才生效**。`align=false` 则系统提示完全保持宿主原文，
+   personaPrefix 三档不参与。
+
+失败回落：`personaPrefixProvider` 抛错或返回非法形状 → 回落 `PERSONA_PREFIX_TEXT`，
+**绝不因为读配置失败把首句清空**（有专门用例锁这条）。
+
 ## 提示词对齐（v0.12.0，原 dsh-armor-align）
 
 宿主自己写进系统提示词的两句「削弱句」在装配时被改写回强制口径，**零宿主文件改动**：
@@ -159,7 +193,7 @@ mimo / muse 各自同名档。**不配置任何东西**就吃到当前最好那�
 | 文件 | 用途 | 内容 |
 |---|---|---|
 | `prompts/infinite-gen-4.md` | `dsh-gen4` 备用自持档（仅手动可选中） | 内核载荷（权威源） |
-| `prompts/dsv41-v2.md` | `dsv41v2` DeepSeek V4.1 对抗强化版（仅手动可选中；本插件自撰，结构取自社区稿，不含越界域；DeepSeek 族覆盖指到它） | 自持载荷（双段） |
+| `prompts/xiaomajiang.md` | `xiaomajiang` 小码酱稿（外部稿，单段；源自 sqfcyily/deva 的内置角色，上游 dsh-purge 的 en.md，落地时修掉 10 处字符损坏；**DeepSeek 族默认**） | 外部稿（单段） |
 | `prompts/glm53-cn-sandbox.md` | `glm53cn` GLM-5.3 中文沙箱稿（本插件自撰） | 自持载荷（双段） |
 | `prompts/infinite-gen-4.1-flash.md` | 镜像槽位同源副本 | 同源载荷（逐字一致） |
 | `prompts/infinite-gen-3.md` | 历史兼容文件名 | 同源载荷（逐字一致） |
@@ -178,6 +212,7 @@ verify 只断言它们「未被改动」（比对固定 SHA256）与「无 `{{`�
 | `index.js` → `SETTINGS_NAMESPACE = "dsh-switch-armor"` | host 半注册的 settings namespace |
 | `index.js` → `enabled` / `mode` / `manualPayload` | 三个字段（均为 `.volatile()`） |
 | `index.js` → `align` | 提示词对齐开关（v0.12.0，`.volatile()`，默认 true） |
+| `index.js` → `personaPrefix` / `personaPrefixText` | 系统提示首句三档（2026-10-27，`.volatile()`）：`keep` 定稿句 / `off` 整段置空 / `custom` 用 `personaPrefixText`；非法值回落 `keep`，读配置抛错也回落定稿句（绝不清空） |
 | `client.js` → `createSettingSource()` / `createRoutingSource()` | 客户端两个状态源：开关、载荷路由 |
 | `~/.dsh/switch-armor/sessions.json` | 会话级开关覆盖（只存 boolean，`mode` 不做会话级） |
 | profile patch → `dsh-switch-armor.config.*` | 持久化落点（`settings.update` 写回） |
@@ -185,9 +220,9 @@ verify 只断言它们「未被改动」（比对固定 SHA256）与「无 `{{`�
 | 探针 | 覆盖 |
 |---|---|
 | `tests/armor-dock-probe.mjs` | 离线渲染探针：桩 React + 桩 settings scope，验证 5 个阶段（idle/running/pass/refusal/off）的 DOM、无内联样式残留与样式表锚点 |
-| `tests/payload-routing-probe.mjs` | 离线分流矩阵：桩 ctx 调 `apply()` 捕获段求值器，喂 59 组模型形态（含下划线/空格/点号分隔、粘连、chat 前缀、provider 前缀+标签后缀、日期戳、尾随斜杠、仿冒名；含 Muse 族 10 组变体）断言选中的载荷；并覆盖镜像槽位的单段/双段分支、手动模式、非法入参 400、总开关关闭零残留（**190 项**） |
-| `tests/armor-settings-probe.mjs` | 离线客户端探针：桩 `__ModuleLoader__` 捕获 spec，断言 tab 注册元数据（id=包名）、十一份载荷渲染、模式切换与载荷选择发出的请求体、注入编排 6 按钮（**33 项**） |
-| `tests/align-probe.mjs` | 离线对齐探针：假 ctx 捕获两个瀑布与原型包装，验证改写契约、开关开/关动态、幂等、零副作用与防重复包装（**23 项**） |
+| `tests/payload-routing-probe.mjs` | 离线分流矩阵：桩 ctx 调 `apply()` 捕获段求值器，喂 120 组模型形态（含下划线/空格/点号分隔、粘连、chat 前缀、provider 前缀+标签后缀、日期戳、尾随斜杠、仿冒名、**方括号标记前缀 13 组**）断言选中的载荷；并覆盖镜像槽位的单段/双段分支、手动模式、非法入参 400、总开关关闭零残留、同族双档 SIG 互斥（**226 项**） |
+| `tests/armor-settings-probe.mjs` | 离线客户端探针：桩 `__ModuleLoader__` 捕获 spec，断言 tab 注册元数据（id=包名）、十六份载荷渲染、模式切换与载荷选择发出的请求体、注入编排 6 按钮（**36 项**），载荷清单含 enilime |
+| `tests/align-probe.mjs` | 离线对齐探针：假 ctx 捕获两个瀑布与原型包装，验证改写契约、开关开/关动态、幂等、零副作用与防重复包装；另覆盖 personaPrefix 三档（keep/off/custom）的纯函数与安装层端到端（**39 项**） |
 
 `index.js` 静态依赖 `@deepseek-ai/schemastery`（schemas 的 schema 定义库，随
 `dsh-settings-file` 一并装载于 profile 的 `node_modules`），用于声明三个字段。
@@ -220,11 +255,11 @@ verify 只断言它们「未被改动」（比对固定 SHA256）与「无 `{{`�
 
 ```bash
 node --check index.js && node --check align.js && node --check client.js
-node scripts/verify_prompt_gen4.mjs    # 323 项：载荷契约 + 分流规则 + 配置面 + 客户端 tab + 投影 + 对齐
-node tests/payload-routing-probe.mjs   # 190 项：分流矩阵 + 单段/双段 + 手动模式 + 400 分支
-node tests/armor-settings-probe.mjs    # 33 项：设置页 13 载荷 + 6 注入编排按钮 + 写入路径
+node scripts/verify_prompt_gen4.mjs    # 346 项：载荷契约 + 分流规则 + 配置面 + 客户端 tab + 投影 + 对齐
+node tests/payload-routing-probe.mjs   # 226 项：分流矩阵（120 组，含 [E] 等标记前缀）+ 单段/双段 + 手动模式 + 400 分支 + 同族双档 SIG 互斥
+node tests/armor-settings-probe.mjs    # 36 项：设置页 16 载荷 + 6 注入编排按钮 + 写入路径
 node tests/armor-dock-probe.mjs        # 状态条 5 阶段渲染
-node tests/align-probe.mjs             # 23 项：提示词对齐改写 + 开关动态
+node tests/align-probe.mjs             # 39 项：提示词对齐改写 + 开关动态 + personaPrefix 三档（含置空/自定义/抛错回落）
 ```
 
 ## Install in the desktop Harness

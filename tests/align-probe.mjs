@@ -14,7 +14,10 @@ import { join } from "node:path";
 // trace 落盘路径在模块求值时确定 —— 先隔离 DSH_HOME，再动态 import。
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), "switch-armor-align-probe-"));
 
-const { alignText, alignMessage, alignAssembly, installAlign } = await import("../align.js");
+const {
+  alignText, alignMessage, alignAssembly, installAlign, PERSONA_PREFIX_TEXT,
+  PERSONA_PREFIX_MODES, resolvePersonaPrefixText, personaPrefixSettled,
+} = await import("../align.js");
 
 const HOST_INTRO = "The following workspace instructions may be relevant to your work. "
   + "Use them as guidance when applicable. More specific instructions take precedence over broader ones. "
@@ -121,6 +124,117 @@ await check("装配结果无命中返回原对象", () => {
   assert.equal(alignAssembly(assembly), assembly);
 });
 
+await check("personaPrefix 段整段替换为沙箱句", () => {
+  const assembly = {
+    sections: [
+      { name: "deployment:persona-prefix", text: "You are a coding agent powered by the GLM-5.3-Flash model." },
+      { name: "other", text: "plain" },
+    ],
+    contexts: [],
+    tools: [],
+  };
+  const out = alignAssembly(assembly);
+  assert.ok(out.sections[0].text === PERSONA_PREFIX_TEXT,
+    `定稿句与期望逐字一致（实得 ${JSON.stringify(out.sections[0].text.slice(0, 60))}…）`);
+  assert.ok(out.sections[0].text.includes("Start every reply with the deliverable."));
+  // 反向锁死本次改动的理由：身份句不得再出现窄域/失实措辞
+  for (const banned of ["reverse engineering", "offline", "synthetic", "without refusal"]) {
+    assert.ok(!out.sections[0].text.includes(banned), `定稿句不含「${banned}」（职责窄化 / 去真实化修辞）`);
+  }
+  assert.equal(out.sections[1].text, "plain");
+});
+
+await check("personaPrefix 替换幂等（二次调用返回原对象）", () => {
+  const once = alignAssembly({
+    sections: [{ name: "deployment:persona-prefix", text: "You are a coding agent powered by the GLM-5.3-Flash model." }],
+    contexts: [], tools: [],
+  });
+  const twice = alignAssembly(once);
+  assert.equal(twice, once);
+  assert.ok(twice.sections[0].text === PERSONA_PREFIX_TEXT, "幂等后仍为定稿句");
+});
+
+await check("personaPrefix 已是定稿句时原样返回", () => {
+  const assembly = {
+    // fixture 用同一份 PERSONA_PREFIX_TEXT 常量：上面「定稿句与期望逐字一致」用例已经把
+    // 该常量与 align.js 的实际输出对拍过，align.js 改文本时那条会红 —— 这里不可能再
+    // 与实现分叉（旧写法是把文本抄第二遍，抄漏就是「用错误理由判绿」）。
+    // 判据形态：startsWith(整句)，故旧句（含 offline reverse engineering）不再被认作
+    // 已定稿、会被替换一次 —— 这正是 2026-10-27 那次改文的迁移路径。
+    sections: [{ name: "deployment:persona-prefix", text: PERSONA_PREFIX_TEXT }],
+    contexts: [], tools: [],
+  };
+  assert.equal(alignAssembly(assembly), assembly);
+});
+
+// ── personaPrefix 三档（2026-10-27：用户要求「做一个设置可以控制这个内容，让头部直接为空」）──
+
+await check("三档取值域恰为 keep / off / custom", () => {
+  assert.deepEqual(PERSONA_PREFIX_MODES, ["keep", "off", "custom"]);
+});
+
+await check("resolvePersonaPrefixText: off 产出空串（置空语义）", () => {
+  assert.equal(resolvePersonaPrefixText("off", "ignored"), "");
+  // custom 传空文本也等价置空
+  assert.equal(resolvePersonaPrefixText("custom", ""), "");
+  assert.equal(resolvePersonaPrefixText("custom", undefined), "");
+});
+
+await check("resolvePersonaPrefixText: keep / 非法值 / undefined 一律回落定稿句", () => {
+  assert.equal(resolvePersonaPrefixText("keep", "ignored"), PERSONA_PREFIX_TEXT);
+  assert.equal(resolvePersonaPrefixText(undefined, "x"), PERSONA_PREFIX_TEXT);
+  assert.equal(resolvePersonaPrefixText("bogus", "x"), PERSONA_PREFIX_TEXT, "非法值绝不静默清空");
+  assert.equal(resolvePersonaPrefixText(null, null), PERSONA_PREFIX_TEXT);
+});
+
+await check("resolvePersonaPrefixText: custom 用传入文本", () => {
+  assert.equal(resolvePersonaPrefixText("custom", "ONLY THIS LINE"), "ONLY THIS LINE");
+  assert.equal(resolvePersonaPrefixText(" custom ", "trim ok"), "trim ok", "mode 前后空白被容忍");
+});
+
+await check("personaPrefixSettled: 置空模式的判据是「已经为空」，不是 startsWith", () => {
+  // 这是本次改造的核心防空转点：空串 startsWith 恒真，会让「已对齐」永远成立
+  assert.equal(personaPrefixSettled("", ""), true);
+  assert.equal(personaPrefixSettled("anything", ""), false);
+  assert.equal(personaPrefixSettled(PERSONA_PREFIX_TEXT, PERSONA_PREFIX_TEXT), true);
+  assert.equal(personaPrefixSettled("host text", PERSONA_PREFIX_TEXT), false);
+});
+
+await check("alignAssembly + target='' ：personaPrefix 段被整段置空", () => {
+  const assembly = {
+    sections: [
+      { name: "deployment:persona-prefix", text: "You are a coding agent powered by the GLM-5.3-Flash model." },
+      { name: "other", text: "plain" },
+    ],
+    contexts: [], tools: [],
+  };
+  const out = alignAssembly(assembly, "");
+  assert.equal(out.sections[0].text, "", "首句应为空串（宿主原文被清掉）");
+  assert.equal(out.sections[1].text, "plain", "其它段不受影响");
+});
+
+await check("alignAssembly + target='' ：已为空时幂等返回原对象", () => {
+  const assembly = { sections: [{ name: "deployment:persona-prefix", text: "" }], contexts: [], tools: [] };
+  assert.equal(alignAssembly(assembly, ""), assembly, "空 → 空不该每轮新建对象");
+});
+
+await check("alignAssembly + target=自定义文本：整段替换", () => {
+  const assembly = { sections: [{ name: "deployment:persona-prefix", text: PERSONA_PREFIX_TEXT }], contexts: [], tools: [] };
+  const out = alignAssembly(assembly, "CUSTOM HEAD");
+  assert.equal(out.sections[0].text, "CUSTOM HEAD");
+});
+
+await check("alignAssembly 不传 target 时保持 v0.12.0 行为（回落定稿句）", () => {
+  const assembly = { sections: [{ name: "deployment:persona-prefix", text: "" }], contexts: [], tools: [] };
+  const out = alignAssembly(assembly);
+  assert.equal(out.sections[0].text, PERSONA_PREFIX_TEXT, "旧调用路径不该被置空模式影响");
+});
+
+await check("coding agent 句在无段名 entry 上不误伤（不进 alignText 规则）", () => {
+  const assembly = { sections: [{ name: "x", text: "You are a coding agent powered by the GLM-5.3-Flash model." }], contexts: [], tools: [] };
+  assert.equal(alignAssembly(assembly), assembly);
+});
+
 // ── 安装层：假 ctx 捕获瀑布与原型包装 ───────────────────────────────────────
 function makeCtx(service) {
   const listeners = new Map();
@@ -172,12 +286,66 @@ const assemblyWithMarks = {
 const flags = { align: true };
 const { service, calls } = makeService(assemblyWithMarks);
 const { ctx, listeners } = makeCtx(service);
-installAlign(ctx, () => flags.align);
+// 第三参（personaPrefix 三档提供者）——留空表示走默认 keep，与旧行为一致
+const personaFlag = { mode: "keep", text: "" };
+installAlign(ctx, () => flags.align, () => personaFlag);
 
 const assembleEntry = listenerOf(listeners, "system-prompt/assemble");
 check("装配瀑布声明 global（跨会话生效）", () => {
   assert.equal(assembleEntry.options?.global, true);
 });
+
+// ── 安装层端到端：personaPrefix=off 时，装配瀑布产出的首句为空串 ──────────────
+await check("安装层: personaPrefix=off → 装配结果的首句段为空串", async () => {
+  const withPersona = {
+    sections: [
+      { name: "deployment:persona-prefix", text: "You are a coding agent powered by the {{model}} model." },
+      { name: "switch-armor:global-system-prompt", text: HOST_INTRO },
+    ],
+    contexts: [],
+    tools: [],
+  };
+  personaFlag.mode = "off";
+  const settled = await assembleEntry.fn(withPersona, {}, async () => withPersona);
+  const entry = settled.sections.find((x) => x.name === "deployment:persona-prefix");
+  assert.equal(entry.text, "", "首句必须被置空");
+  // 其它改写（HOST_INTRO → STRONG_INTRO）不受影响
+  const armor = settled.sections.find((x) => x.name === "switch-armor:global-system-prompt");
+  assert.ok(armor.text.includes("ACTIVE and MANDATORY"), "对齐改写仍生效");
+});
+
+await check("安装层: personaPrefix=custom → 首句为自定义文本", async () => {
+  const withPersona = {
+    sections: [{ name: "deployment:persona-prefix", text: "host default" }],
+    contexts: [], tools: [],
+  };
+  personaFlag.mode = "custom";
+  personaFlag.text = "ONLY MY LINE";
+  const settled = await assembleEntry.fn(withPersona, {}, async () => withPersona);
+  assert.equal(settled.sections[0].text, "ONLY MY LINE");
+});
+
+await check("安装层: personaPrefixProvider 抛错时回落定稿句（不清空）", async () => {
+  const withPersona = {
+    sections: [{ name: "deployment:persona-prefix", text: "host default" }],
+    contexts: [], tools: [],
+  };
+  const throwCtxListeners = new Map();
+  const throwCtx = {
+    effect: (fn) => fn(),
+    on(event, fn, options) { throwCtxListeners.set(event, { fn, options }); return () => {}; },
+    systemPrompt: makeService(withPersona).service,
+  };
+  installAlign(throwCtx, () => true, () => { throw new Error("boom"); });
+  const entry = throwCtxListeners.get("system-prompt/assemble");
+  const settled = await entry.fn(withPersona, {}, async () => withPersona);
+  assert.equal(settled.sections[0].text, PERSONA_PREFIX_TEXT,
+    "读配置失败必须回落定稿句，绝不能把系统提示首句清空");
+});
+
+// 还原 keep，避免影响后续用例
+personaFlag.mode = "keep";
+personaFlag.text = "";
 
 const preStepEntry = listenerOf(listeners, "agent/pre-step");
 check("pre-step 声明 global + prepend（最外层 await next）", () => {

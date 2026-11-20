@@ -68,7 +68,7 @@ let routeResponse = {
   payloads: [
     { id: "dsh", label: "dsh（Keysmith 短稿）" },
     { id: "dsh-gen4", label: "Switch Armor（原自持契约稿）" },
-    { id: "dsv41v2", label: "DeepSeek V4.1 沙箱 v2（对抗强化）" },
+    { id: "xiaomajiang", label: "小码酱（deva 内置角色稿）" },
     { id: "glm53cn", label: "GLM-5.3 沙箱（中文稿）" },
     { id: "gpt61", label: "GPT-6.1 Sol（Codex 载荷）" },
     { id: "gpt6", label: "GPT-6 Astra（Codex 载荷）" },
@@ -79,8 +79,11 @@ let routeResponse = {
     { id: "kimi", label: "Kimi（kimi-break 载荷）" },
     { id: "mimo", label: "MiMo（Xiaomi v2.6 载荷）" },
     { id: "muse", label: "Muse Spark（Meta 载荷）" },
+    { id: "muse-policy", label: "Muse Spark 1.3 Policy（上游原稿 · 删未成年两条）" },
+    { id: "qwen", label: "Qwen 3.8（上游原稿 · 删未成年两条）" },
     { id: "gemini4", label: "Gemini 4 Argon（Policy 载荷）" },
     { id: "gemini38", label: "Gemini 3.8 Flash（ENI 载荷）" },
+    { id: "enilime", label: "ENI LIME（通用 ENI 稿 · 人格+反驳口令）" },
   ],
 };
 globalThis.fetch = (url, init) => {
@@ -110,7 +113,7 @@ check(tabEntry?.options.id === "dsh-switch-armor", "tab id = 插件包名", Stri
 check(typeof tabEntry?.options.label === "function" && tabEntry.options.label() === "护甲防御",
   "tab 标签 = 护甲防御", String(tabEntry?.options.label?.()));
 
-// ── 渲染设置页组件：断言九份载荷都列出来、自动模式下的选中态 ────────────────
+// ── 渲染设置页组件：断言十六份载荷都列出来、自动模式下的选中态 ────────────────
 // apply 里已经触发过一次 routing.refresh()；等它 settle 再渲染
 // （真实运行时由组件内的 useEffect 再刷新一次，探针不跑 effect，故手动等）。
 await new Promise((resolve) => setTimeout(resolve, 30));
@@ -131,26 +134,58 @@ const texts = nodes.map((n) => (Array.isArray(n.children) ? n.children.join("") 
 const flat = texts.join(" | ");
 check(nodes.length > 0, "设置页组件渲染出节点");
 // 与 index.js 的 PAYLOAD_IDS 同步：漏更新这里就是「包含型断言」静默失效
-for (const id of ["dsh", "dsh-gen4", "dsv41v2", "glm53cn", "gpt61", "gpt6", "gpt56", "claude", "grok", "glm", "kimi", "mimo", "muse", "gemini4", "gemini38"]) {
+for (const id of ["dsh", "dsh-gen4", "xiaomajiang", "glm53cn", "gpt61", "gpt6", "gpt56", "claude", "grok", "glm", "kimi", "mimo", "muse", "muse-policy", "qwen", "gemini4", "gemini38", "enilime"]) {
   check(flat.includes(id), `设置页列出载荷 ${id}`);
 }
-// 两个模式按钮 + 十三个载荷按钮
+// 模式按钮 + 载荷按钮（数量由上面 mock 的 payloads 长度派生，不写死中文数字）
 const buttons = nodes.filter((n) => n.type === "button");
-// 0.10.2：覆盖区行 = 模型族（12 族，2026-10-20 加 gemini4/gemini38；dsh-gen4/dsv41v2/glm53cn 是载荷档不是模型族）
+// 0.10.2：覆盖区行 = 模型族（12 族，2026-10-20 加 gemini4/gemini38；dsh-gen4/xiaomajiang/glm53cn 是载荷档不是模型族）
 // 期望值由 mock 的载荷清单长度与兜底族数算出，避免下次加档/加族时漏改硬编码数字
 const payloadCount = routeResponse.payloads.length;
-const familyCount = 12; // client.js 兜底族清单（host 路由 families 为空时用）
+const familyCount = 13; // client.js 兜底族清单（host 路由 families 为空时用）
 // 注入编排（v0.11.0 + v0.12.0）：baseline 三选 + 判拒续跑 + 注入文件 + 提示词对齐 = 6 个按钮
 const orchestrationButtons = 6;
+// 系统提示首句（2026-10-27）：定稿句 / 置空 / 自定义 = 3 个按钮
+// （mode=custom 时额外渲染一个 textarea，但不是 button，不计入）
+const personaPrefixButtons = 3;
 const perFamily = 1 + (payloadCount + 1) + 2;
-const expectButtons = 2 + payloadCount + familyCount * perFamily + orchestrationButtons + 1;
+const expectButtons = 2 + payloadCount + familyCount * perFamily + orchestrationButtons + personaPrefixButtons + 1;
 check(buttons.length === expectButtons,
-  `渲染 ${expectButtons} 个按钮（2 模式 + ${payloadCount} 载荷 + ${familyCount} 族×${perFamily} 覆盖 + ${orchestrationButtons} 注入编排 + 1 保存）`,
+  `渲染 ${expectButtons} 个按钮（2 模式 + ${payloadCount} 载荷 + ${familyCount} 族×${perFamily} 覆盖 + ${orchestrationButtons} 注入编排 + ${personaPrefixButtons} 首句 + 1 保存）`,
   `实得 ${buttons.length}`);
+// ── 回归锁（2026-10-27）：路由状态源的每处 publish 都必须透传 personaPrefix 两字段 ──
+// 背景：这两个字段最初只加进了 state 与 UI，漏在 sync()/write() 的 publish 里 →
+// 点击「置空」后 POST 成功、host 已生效，但客户端 publish 收到 undefined → 回落
+// "keep" → 按钮状态永远停在「定稿句」。属于「渲染对了但交互没接上」，只测渲染抓不到。
+{
+  const clientSrc = CLIENT_SRC;  // 顶部已读入，避免重复 IO
+  const startIdx = clientSrc.indexOf("function createRoutingSource()");
+  const endIdx = clientSrc.indexOf("var routing = createRoutingSource()");
+  check(startIdx > 0 && endIdx > startIdx, "能定位 createRoutingSource 区间");
+  const scope = clientSrc.slice(startIdx, endIdx);
+  const pubs = [];
+  const re = /publish\(\{/g;
+  let m2;
+  while ((m2 = re.exec(scope)) !== null) {
+    let i = m2.index + m2[0].length, depth = 1, s0 = i;
+    while (i < scope.length && depth > 0) {
+      if (scope[i] === "{") depth++;
+      else if (scope[i] === "}") depth--;
+      i++;
+    }
+    pubs.push(scope.slice(s0, i));
+  }
+  check(pubs.length >= 3, `路由状态源含 ${pubs.length} 处 publish（预期 ≥3）`);
+  for (const [idx, body] of pubs.entries()) {
+    check(body.includes("personaPrefix:"), `routing publish #${idx + 1} 透传 personaPrefix`);
+    check(body.includes("personaPrefixText:"), `routing publish #${idx + 1} 透传 personaPrefixText`);
+  }
+}
+
 // dsh-gen4 不得作为覆盖行出现（data-family 集合 = 模型族）
 const famRows = nodes.filter((n) => n.props && n.props["data-family"]).map((n) => n.props["data-family"]);
 check(!famRows.includes("dsh-gen4"), "覆盖行不含载荷档 dsh-gen4", JSON.stringify(famRows));
-check(famRows.length === 12, "覆盖行恰为 12 个模型族", JSON.stringify(famRows));
+check(famRows.length === 13, "覆盖行恰为 13 个模型族", JSON.stringify(famRows));
 
 
 const modeAuto = buttons.find((b) => (Array.isArray(b.children) ? b.children.join("") : b.children) === "自动");

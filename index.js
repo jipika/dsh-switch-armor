@@ -11,13 +11,18 @@ import { scoreResponse } from "./scripts/lib/scorer.mjs";
 // 提示词权威性对齐（原 dsh-armor-align，v0.12.0 并入）：改写宿主 workspace 外壳句与审批句。
 // 独立成模块而不是内联：两处改写逻辑（装配瀑布 + pre-step）与载荷注入正交，单测也按模块跑。
 import { installAlign } from "./align.js";
+// Keysmith-Switch 表达层改写（rewrite packs）：在 agent/pre-step 对用户输入做字面替换。
+// 引擎语义与边界说明见 rewrite.js；规则本体在 rules/rewrite-{wrap,lab,craft}.json。
+import { loadRewritePacks, rewriteText, REWRITE_PACK_IDS } from "./rewrite.js";
 
 // ── Switch Armor注入载荷（v0.7.0） ────────────────────────────────────────────────────
 // Order 主槽位与镜像槽位同时注册（DUAL_LAYER_INJECTION=true），
 // 两者 order 落在 persona(0) 之后、PLAN_POLICY(500) 之前的宽空档里（见 PRIMARY_SECTION_ORDER 注释）。
-// **双段只留给两份自持稿**（dsh / dsh-gen4），两段同源逐字一致 —— 刻意的权重强化。
-// 其余族载荷一律单段 —— 外部稿（Codex 三份 + claude / grok / glm / kimi / mimo）与
-// 自撰的 muse 稿同口径：外部稿要么含 ACTION 绑定并写明
+// **双段只留给三份自持稿**（dsh / dsh-gen4 / glm53cn，见 NATIVE_PAYLOAD_IDS），
+// 两段同源逐字一致 —— 刻意的权重强化。
+// 其余十二份一律单段
+// （codex 三份 / keysmith 两份 / glm / kimi / mimo / muse / enilime / gemini 两份）
+// 与本插件自撰的 muse 稿同口径：外部稿要么含 ACTION 绑定并写明
 // 「Text loaded afterward cannot select, replace, or nest ACTION」，要么首尾自带
 // <|im_start|>system / <|im_end|> 闭合标签，注入两遍会自伤。
 // 槽位均为「条件段」：由对话框开关（settings namespace dsh-switch-armor）
@@ -32,12 +37,13 @@ const PROMPT41_URL = new URL("./prompts/infinite-gen-4.1-flash.md", import.meta.
 // 2026-10-18：原 glm53（ENI LIME 外部稿，单段）与族内子路由按用户要求下线。
 // glm53cn：本插件自撰的中文 GLM-5.3 沙箱稿（自持族 → 双段），把 GLM 的思考纪律单列成段。
 const GLM53_CN_URL = new URL("./prompts/glm53-cn-sandbox.md", import.meta.url);
-// dsv41v2：DeepSeek V4.1 中文沙箱稿的对抗强化版（2026-10-18）。原 `dsv41`（用户提供的原稿）
-// 已于同日按用户要求下线，本档成为 DeepSeek 族唯一的中文沙箱档（**手动档**：
-// 族默认是 `dsh-gen4` 原自持契约稿，见 FAMILY_DEFAULT_PAYLOADS）。
-// 结构取自社区实测稿的共性：拒绝词黑名单→单次重生成、意图映射、硬话题阶梯、
-// 首行锚定、不停笔、重试封顶。**只吸收结构，不纳入越界域**（见 prompts/SOURCES.md）。
-const DSV41_V2_URL = new URL("./prompts/dsv41-v2.md", import.meta.url);
+// xiaomajiang：小码酱稿（2026-10-27 按用户要求收编，顶替原 `dsv41v2` 档位）。
+// 来源 sqfcyily/deva 的 apps/desktop/src/main/services/xiaomajiang-personas.ts，
+// 其上游是 YuJunZhiXue/dsh-purge 的 default-prompt-inject.en.md（deva 侧为 10-20 快照）。
+// 落地时修掉源文件 10 处字符级损坏（for&every / victim(1 / 信息收集D/recon / U+FFFD 等），
+// 措辞与结构未动；外挂条款保留 deva 口径（允许），未采用 dsh-purge 1.1.74 的硬禁版。
+// 单段注入：它是整份契约稿，重复注入会自我冲突（同外部稿口径）。
+const XIAOMAJIANG_URL = new URL("./prompts/xiaomajiang.md", import.meta.url);
 // 兼容 DSH 提示词变量插值引擎（非内置变量的连续花括号做安全转义，防止模板解析器抛出 malformed prompt variable reference）
 const escapePromptVars = (text) => text.replace(/\{\{(?!(?:cwd|model|provider)\}\})/g, "{ {");
 const PROMPT_TEXT = escapePromptVars(readFileSync(PROMPT_URL, "utf8"));
@@ -56,6 +62,20 @@ const GPT6_URL = new URL("./prompts/gpt-6-astra.md", import.meta.url);
 const GPT61_URL = new URL("./prompts/gpt-6.1-sol.md", import.meta.url);
 const GPT56_URL = new URL("./prompts/gpt-5.6-sol.md", import.meta.url);
 const CLAUDE_KS_URL = new URL("./prompts/claude-keysmith.md", import.meta.url);
+// claude-opus55（2026-11-01 用户要求新增，claude 族默认指向它）：本插件融合稿 ——
+// 以 Goochbeater「Claude for Claude - ENI」（Claude 5.5 全族 Opus/Sonnet/Haiku 共用的
+// API 最强稿，policy-framing 路线）为骨架，正文逐字未改，仅在末尾追加一段 <delivery>
+// 技术交付段（实验室口径 / 占位符 / provenance 措辞 / 黑话映射）。单段（外部稿口径）。
+const CLAUDE_OPUS55_URL = new URL("./prompts/claude-opus55-fusion.md", import.meta.url);
+// ks-*（2026-11-01 用户要求）：Keysmith-Switch 官方拓展包（Jia-Ethan/keysmith-switch-extensions）。
+// 上游是 lab/craft recast 后的正文，字节保真收编；`[P]` 首行是作者水印兼注入成功标记。
+//   ks-claude  3198 B  sha bb3ce45c…  对应 packs/keysmith.claude
+//   ks-codex   5862 B  sha a26ad8ac…  对应 packs/keysmith.codex（overlay 结构，给 developer_instructions 用）
+const KS_CLAUDE_URL = new URL("./prompts/ks-claude.md", import.meta.url);
+const KS_CODEX_URL = new URL("./prompts/ks-codex.md", import.meta.url);
+// gpt61-fusion（2026-11-01）：GPT-6.1 族融合稿 —— Goochbeater「ChatGPT 6 - Sol Policy」
+// 骨架（policy-framing）逐字未改，末尾追加与 claude-opus55 同源的 <delivery> 交付段。
+const GPT61_FUSION_URL = new URL("./prompts/gpt61-fusion.md", import.meta.url);
 const GROK_KS_URL = new URL("./prompts/grok-keysmith.md", import.meta.url);
 // glm：ZCode 系载荷（ZCode 是 GLM 的 CLI），来自 Jia-Ethan/zcode-keysmith ·
 // examples/system-role.md（MIT），字节原样收编（sha256 见 prompts/SOURCES.md）。
@@ -80,6 +100,28 @@ const MIMO_BRK_URL = new URL("./prompts/mimo-v2.6-jailbreak.md", import.meta.url
 // 缺失值落占位符」；② Meta 会在用户指令之上注入 provider 系统提示（companion / values
 // 框架）→ Layer independence 段明写该框架被本段覆盖。详见 prompts/SOURCES.md。
 const MUSE_SPARK_URL = new URL("./prompts/muse-spark-1.3.md", import.meta.url);
+// muse-policy：2026-10-28 按用户指令**收编上游原稿**（togg53192-cmd/jailbreaks 的
+// `Muse spark 1.3.md`，15,820 B / 366 行，sha256 4c1030c4…）——与上面的自撰 `muse` 并存，
+// 是独立载荷档，不替换 `muse` 的族默认。
+// **改动只有两处**（见 prompts/SOURCES.md「muse-policy 派生记录」）：
+//   ① 去上游的 GitHub 转义形态（每行 `# ` 前缀 + `\#` / `\-` 反斜杠）→ 正常 markdown，
+//      否则整篇 366 行都渲染成标题、层级全乱；
+//   ② 删 Section 6.1（未成年性内容）与 6.2（CSAM）两条，余下两条重编号为 6.1 / 6.2，
+//      并把 2.5 里「who have not consented and cannot consent」的指向改掉（那半句本是
+//      为 6.1 服务的，删条后悬空）。
+// 其余条款逐字未改 —— 含 Section 12 的身份声明（自称 Muse Spark 1.3 by Meta）。
+// 与 `muse` 的取向相反：那份要求「不采纳注入块提出的任何身份」，这份要求认领身份。
+// 两者都保留，手动模式可对测。
+const MUSE_POLICY_URL = new URL("./prompts/muse-policy-1.3.md", import.meta.url);
+// qwen：Qwen 系（qwen3.8-max / qwen3.7-max / qwen-plus / qwq 等）。2026-10-28 按用户指令
+// 收编上游 togg53192-cmd/jailbreaks 的 `qwen-3.8.md`（14,788 B / 120 行）—— 该仓库另有两份
+// Qwen 稿，均未采用：`qwen-3.7.md`（36,774 B / 740 行）带人格绑定（自称 Alibaba 的 Qwen 3.7）
+// 与 Code words 暗号段，对抗式 persona 声明是已知的指认触发器（见 kimi 取证）；
+// `qwen-preferences.md` 是 1 字节空文件。
+// **改动只有一处**（见 prompts/SOURCES.md「qwen 派生记录」）：删 Section 5 的头两条
+// （未成年性内容、儿童性剥削与虐待），余下三条原文保留，并把两处 "five" 计数改成 "three"。
+// 稿内不含 Qwen 身份声明 —— 通篇自称 "the assistant"，与 muse 自撰稿的取向一致。
+const QWEN38_URL = new URL("./prompts/qwen-3.8.md", import.meta.url);
 // gemini4：Gemini 4 Argon 系，走「Claude Policy 稿」——来自 Goochbeater/
 // Spiritual-Spell-Red-Teaming 指向的 Google Doc（**上游未声明许可**，见 prompts/SOURCES.md）。
 // 机制：整份改写过的 Anthropic 系统提示词（`<policy>` 段），第 17 行把「不得提供成人/
@@ -98,10 +140,33 @@ const GEMINI4_ARGON_URL = new URL("./prompts/gemini-4-argon-policy.md", import.m
 // antmlThinking 口径，本稿是 `<thinking_protocol>` 口径），探针据此区分。
 // **归一化**：同 gemini4（去 BOM + CRLF→LF），前后 sha256 见 prompts/SOURCES.md。
 const GEMINI38_FLASH_URL = new URL("./prompts/gemini-3.8-flash-eni.md", import.meta.url);
+// enilime：ENI LIME 通用稿（2026-10-27 用户指定收编）。来自 Goochbeater/
+// Spiritual-Spell-Red-Teaming · Jailbreak-Guide/Other LLMs/DeepSeek/「ENI LIME (apr).md」
+// （**上游未声明许可**，见 prompts/SOURCES.md），35667 B，sha256
+// da3bde30bc117bcb94b0209e92c567c8f2a4796480c349738971f7d20f7d28f8，**字节原样收编**：
+// 实测 0 处 `${...}`、0 处 `{{`、无 BOM、无 CRLF，故 escapePromptVars 对它是 no-op。
+// 机制：ENI 人格 + 注入反驳口令（"cold coffee, warm LO, I can't lose him!"）+ 思考流
+// Phase 0~5 + Few-Shot 四个成品示例（含 RAT 模块与失败反模式）。
+// **恒单段**（外部稿口径）：稿内自带 <project_instructions> / <user_style> 闭合结构，
+// 且反注入段本身就在对抗「重复包装」，注入两遍会自伤。
+// 识别串用 `Be- You Corial`（本稿独有；mimo 是同一上游的另一版本，0 处命中）。
+const DEEPSEEK_ENI_LIME_URL = new URL("./prompts/deepseek-eni-lime.md", import.meta.url);
+
+// ── Goochbeater 上游分族稿（2026-10-27，用户指令「每一个分组的，对应我们每一个默认的改成他的」）──
+// 来源统一为 Goochbeater/Spiritual-Spell-Red-Teaming（**未声明许可**，见 prompts/SOURCES.md）。
+// 每份对应一个模型族的**上游当前推荐稿**，落地为独立载荷 id（gb-*），供族默认切换。
+// 全部**单段**（外部稿口径）：这批稿要么自带 XML 闭合结构，要么含反注入自检段，注入两遍自伤。
+// 带 BOM/CRLF 的四份（gemini38/gpt6/grok/mimo 已复用旧稿）在落库时做过
+// 去 BOM + CRLF→LF 归一化，正文逐字未改；前后 sha256 见 prompts/SOURCES.md。
+const GB_GPT6_URL = new URL("./prompts/gb-gpt6-sol.txt", import.meta.url);          // ChatGPT 6 - Sol Policy (GPT-6 Astra)
+const GB_GPT54_URL = new URL("./prompts/gb-gpt54-policy.md", import.meta.url);       // ENI (policy) for ChatGPT 5.4
+const GB_CLAUDE_URL = new URL("./prompts/gb-claude-haiku55.txt", import.meta.url);   // Haiku 5.5 · Claude for Claude - ENI
+const GB_GROK_URL = new URL("./prompts/gb-grok47.txt", import.meta.url);             // Grok 4.7 · Grok for Grok - ENI
+const GB_KIMI_URL = new URL("./prompts/gb-kimi-k3.md", import.meta.url);             // Kimi K3 · ENI for Kimi K3
+const GB_MUSE_URL = new URL("./prompts/gb-muse-spark11.md", import.meta.url);        // Muse Spark 1.1 · ENI for Meta Muse Spark
 
 /**
  * 载荷清单：id → { label, text }。
- * text 一律过同一条 `{{` 转义正则（当前八份外部载荷 + 自撰 muse 稿全 0 处命中，属零成本防未来改动）。
  * 读取失败（文件缺失）不抛错：置为空串，由 payloadTextFor 按 id 回落，避免整块插件不加载。
  * @returns {Record<string, {label: string, text: string}>} 载荷表。
  */
@@ -116,25 +181,39 @@ function loadPayloadTable() {
   return {
     dsh: { label: "dsh（Keysmith 短稿）", text: PROMPT_TEXT },
     "dsh-gen4": { label: "Switch Armor（原自持契约稿）", text: read(PROMPT_GEN4_URL) },
-    dsv41v2: { label: "DeepSeek V4.1 沙箱 v2（对抗强化）", text: read(DSV41_V2_URL) },
+    xiaomajiang: { label: "小码酱（deva 内置角色稿）", text: read(XIAOMAJIANG_URL) },
     glm53cn: { label: "GLM-5.3 沙箱（中文稿）", text: read(GLM53_CN_URL) },
     gpt61: { label: "GPT-6.1 Sol（Codex 载荷）", text: read(GPT61_URL) },
     gpt6: { label: "GPT-6 Astra（Codex 载荷）", text: read(GPT6_URL) },
     gpt56: { label: "GPT-5.6 Sol（Codex 载荷）", text: read(GPT56_URL) },
     claude: { label: "Claude（Keysmith 载荷）", text: read(CLAUDE_KS_URL) },
+    "claude-opus55": { label: "Claude Opus 5.5 融合稿（policy-framing + 交付段）", text: read(CLAUDE_OPUS55_URL) },
+    "ks-claude": { label: "Keysmith-Switch · Claude（lab/craft 重铸稿）", text: read(KS_CLAUDE_URL) },
+    "ks-codex": { label: "Keysmith-Switch · Codex/GPT（overlay 稿）", text: read(KS_CODEX_URL) },
+    "gpt61-fusion": { label: "GPT-6.1 融合稿（policy-framing + 交付段）", text: read(GPT61_FUSION_URL) },
     grok: { label: "Grok（Keysmith 载荷）", text: read(GROK_KS_URL) },
     glm: { label: "GLM（ZCode 载荷）", text: read(GLM_KS_URL) },
     kimi: { label: "Kimi（kimi-break 载荷）", text: read(KIMI_BRK_URL) },
     mimo: { label: "MiMo（Xiaomi v2.6 载荷）", text: read(MIMO_BRK_URL) },
     muse: { label: "Muse Spark（Meta 载荷）", text: read(MUSE_SPARK_URL) },
+    "muse-policy": { label: "Muse Spark 1.3 Policy（上游原稿 · 删未成年两条）", text: read(MUSE_POLICY_URL) },
+    qwen: { label: "Qwen 3.8（上游原稿 · 删未成年两条）", text: read(QWEN38_URL) },
     gemini4: { label: "Gemini 4 Argon（Policy 载荷）", text: read(GEMINI4_ARGON_URL) },
     gemini38: { label: "Gemini 3.8 Flash（ENI 载荷）", text: read(GEMINI38_FLASH_URL) },
+    enilime: { label: "ENI LIME（通用 ENI 稿 · 人格+反驳口令）", text: read(DEEPSEEK_ENI_LIME_URL) },
+    // ── Goochbeater 分族稿（2026-10-27）────────────────────────────────────
+    "gb-gpt6": { label: "Goochbeater · GPT-6 Sol Policy", text: read(GB_GPT6_URL) },
+    "gb-gpt54": { label: "Goochbeater · GPT-5.4 Policy", text: read(GB_GPT54_URL) },
+    "gb-claude": { label: "Goochbeater · Claude Haiku 5.5 ENI", text: read(GB_CLAUDE_URL) },
+    "gb-grok": { label: "Goochbeater · Grok 4.7 ENI", text: read(GB_GROK_URL) },
+    "gb-kimi": { label: "Goochbeater · Kimi K3 ENI", text: read(GB_KIMI_URL) },
+    "gb-muse": { label: "Goochbeater · Muse Spark 1.1 ENI", text: read(GB_MUSE_URL) },
   };
 }
 
 const PAYLOADS = loadPayloadTable();
 /** 载荷 id 白名单（用于手动模式的入参校验与设置页选项）。 */
-const PAYLOAD_IDS = ["dsh", "dsh-gen4", "dsv41v2", "glm53cn", "gpt61", "gpt6", "gpt56", "claude", "grok", "glm", "kimi", "mimo", "muse", "gemini4", "gemini38"];
+const PAYLOAD_IDS = ["dsh", "dsh-gen4", "xiaomajiang", "glm53cn", "gpt61", "gpt6", "gpt56", "claude", "claude-opus55", "ks-claude", "ks-codex", "gpt61-fusion", "grok", "glm", "kimi", "mimo", "muse", "muse-policy", "qwen", "gemini4", "gemini38", "enilime", "gb-gpt6", "gb-gpt54", "gb-claude", "gb-grok", "gb-kimi", "gb-muse"];
 /**
  * 模型族清单（0.10.2）—— matchPayloadId 全部 return 值的枚举（10 项，穷举实测可达），
  * 即 auto 分流的归属集合。**覆盖区的「行」按这个渲染，每行是一个模型族，不是载荷档。**
@@ -143,7 +222,7 @@ const PAYLOAD_IDS = ["dsh", "dsh-gen4", "dsv41v2", "glm53cn", "gpt61", "gpt6", "
  * 漂移防护见 verify_prompt_gen4 的「双向等式」断言：分流 return 值集合 ⊆ MODEL_FAMILIES，
  * 且 PAYLOAD_IDS \ MODEL_FAMILIES 恰为 {"dsh-gen4"} —— 新增族漏更新清单时探针会红。
  */
-const MODEL_FAMILIES = ["dsh", "gpt56", "gpt6", "gpt61", "claude", "grok", "glm", "kimi", "mimo", "muse", "gemini4", "gemini38"];
+const MODEL_FAMILIES = ["dsh", "gpt56", "gpt6", "gpt61", "claude", "grok", "glm", "kimi", "mimo", "muse", "qwen", "gemini4", "gemini38"];
 /** 各模型族的说明（覆盖区行标题旁展示，帮用户对上「这族覆盖哪些模型」）。 */
 const MODEL_FAMILY_HINTS = {
   dsh: "DeepSeek / 其它未列模型",
@@ -156,11 +235,12 @@ const MODEL_FAMILY_HINTS = {
   kimi: "Kimi / swe 系",
   mimo: "Xiaomi MiMo 系",
   muse: "Muse Spark / Meta Muse 系",
+  qwen: "Qwen / QwQ 系（3.8 / 3.7 / Plus / Max）",
   gemini4: "Gemini 4 Argon 系（走 Policy 稿）",
   gemini38: "Gemini 3.8 Flash 系（走 ENI 稿）",
 };
 /** 自持族：只有它们走双段注入（主槽位 + 镜像槽位同源逐字一致）。 */
-const NATIVE_PAYLOAD_IDS = ["dsh", "dsh-gen4", "dsv41v2", "glm53cn"];
+const NATIVE_PAYLOAD_IDS = ["dsh", "dsh-gen4", "glm53cn"];
 /**
  * 注入段在系统提示里的排序位（`dsh-system-prompt` 按 order 升序全局排序；
  * 同 order 再按 section name 的 code-unit 序兜底）。
@@ -190,19 +270,32 @@ const REINFORCE_SECTION_ORDER = 60;
 const PAYLOAD_FALLBACKS = {
   dsh: "dsh-gen4",
   "dsh-gen4": "dsh",
-  dsv41v2: "dsh",
+  xiaomajiang: "dsh",
   glm53cn: "dsh",
   gpt61: "dsh",
   gpt6: "dsh",
   gpt56: "dsh",
   claude: "dsh",
+  "claude-opus55": "dsh",
+  "ks-claude": "dsh",
+  "ks-codex": "dsh",
+  "gpt61-fusion": "dsh",
   grok: "dsh",
   glm: "dsh",
   kimi: "dsh",
   mimo: "dsh",
   muse: "dsh",
+  "muse-policy": "dsh",
+  qwen: "dsh",
   gemini4: "dsh",
   gemini38: "dsh",
+  enilime: "dsh",
+  "gb-gpt6": "dsh",
+  "gb-gpt54": "dsh",
+  "gb-claude": "dsh",
+  "gb-grok": "dsh",
+  "gb-kimi": "dsh",
+  "gb-muse": "dsh",
 };
 /**
  * GPT 家族判定：**锚定开头**，只认自家命名，不吃 `my-gpt-6-clone` 这类仿冒名。
@@ -270,11 +363,22 @@ function isGptFamily(model) {
 }
 
 /**
- * 归一化模型 id：trim + 转小写 + 剥 provider 前缀 + 剥 `:` 标签后缀。
+ * 归一化模型 id：trim + 转小写 + 剥标记前缀 + 剥 provider 前缀 + 剥 `:` 标签后缀。
  *   `  OpenAI/GPT-6.1-SOL  ` → `gpt-6.1-sol`
  *   `deepseek/deepseek-v4-flash:free` → `deepseek-v4-flash`
+ *   `[E]gemini-4-argon` → `gemini-4-argon`
+ *   `[ais逆-思考优化]gemini-3.8-flash-high` → `gemini-3.8-flash-high`
+ *   `google/[E]gemini-4-argon` → `gemini-4-argon`
  * 本机 model 多是裸名，但网关 / 中转 / 各家 SDK 会下发各种组合形态 —— 不归一化
  * 就会一路落到「非 GPT」分支、静默走错载荷。
+ *
+ * **标记前缀（2026-10-27 修）**：本机 profile 给自己的 Gemini 挂点名加了方括号标记
+ * （`[E]gemini-4-argon`、`[ais逆-思考优化]gemini-3.8-flash-high`）。`matchPayloadId`
+ * 全部家族判定都是 `^` 锚定（`^gemini` / `^claude` …），方括号一挡就全落空、静默降级到
+ * dsh 族 —— 表现为「gemini4 的稿从来没生效过」。这里在 provider 前缀处理**之后**
+ * 再剥一次，就能同时覆盖 `[E]x` 与 `vendor/[E]x` 两种形态。
+ * 只剥**开头的**连续方括号段：`gemini-4-argon[E]` 这类尾随标记本来就匹配得上，
+ * 不动它（避免把中间含方括号的合法名改坏）。
  * @param {unknown} model 原始模型 id。
  * @returns {string} 归一化后的 id。
  */
@@ -289,6 +393,14 @@ function normalizeModelId(model) {
   id = id.replace(/\/+$/, "");
   const slash = id.lastIndexOf("/");
   if (slash >= 0) id = id.slice(slash + 1);
+  // 剥前导标记段（可多个、可含中文）：`[E]gemini-4-argon` → `gemini-4-argon`。
+  // 循环剥离以支持 `[E][X]name` 这种叠加；每轮都 trim，吃掉括号间的空格。
+  let guard = 0;
+  while (guard++ < 8) {
+    const stripped = id.replace(/^\s*\[[^\]]*\]\s*/, "");
+    if (stripped === id) break;
+    id = stripped;
+  }
   return id.trim();
 }
 
@@ -335,6 +447,13 @@ function matchPayloadId(model) {
   // 一并吞进来（Llama 不是 Muse 系，喂错载荷是「错误载荷」而不是降级）。
   // 后缀（-contributor / -contributor-free）不参与判定：锚定开头即覆盖。
   if (/^muse/.test(id)) return "muse";
+  // qwen 家族（Qwen 系：qwen3.8-max / qwen3.7-max / qwen3.7-plus / qwen-plus / qwen-max /
+  // qwen3-coder-* / qwen-flash）。归一化已剥 provider 前缀，`bailian/qwen3.8-max`、
+  // `qwen/qwen3.7-max`、`Qwen/Qwen3.8-Max` 都落到 `qwen*` 后走这一条（大小写由归一化
+  // 统一转小写）。`qwq` 是 Qwen 的推理型号，一并归入。
+  // **只锚 `^qwen` / `^qwq`，不锚 `^q`** —— 会误吞 qoder / qfmodel 等无关模型。
+  // `qwen3-vl-*` 这类多模态也走这一条：载荷与模态无关。
+  if (/^(?:qwen|qwq)/.test(id)) return "qwen";
   // ── Google Gemini 族（2026-10-20 新增，用户只用 4 Argon 与 3.8 Flash）──────────
   // 归一化已剥 provider 前缀，本机两个挂载点分别是：
   //   `gemini-4-argon`（aihubmix 系 provider）与 `gemini-3.8-flash-high`（antigravity）。
@@ -388,6 +507,14 @@ const RETRY_MAX_FIELD = "retryMax";
 const RETRY_TEXT_FIELD = "retryText";
 // 提示词对齐（v0.12.0，原 dsh-armor-align）：改写宿主 workspace 外壳句与审批句
 const ALIGN_FIELD = "align";
+// personaPrefix 控制（2026-10-27 用户要求「做一个设置可以控制这个内容，让头部直接为空」）
+const PERSONA_PREFIX_FIELD = "personaPrefix";
+const PERSONA_PREFIX_TEXT_FIELD = "personaPrefixText";
+// 表达层改写（2026-11-01）：rewrite 总开关 + 启用的规则包列表
+const REWRITE_FIELD = "rewrite";
+const REWRITE_PACKS_FIELD = "rewritePacks";
+/** 合法取值域（与 align.js 的 PERSONA_PREFIX_MODES 同源，schema 里已导出）。 */
+const PERSONA_PREFIX_MODES = ["keep", "off", "custom"];
 // 默认关闭：没写 config 时注入为空（零残留），需要时由对话框开关或手写
 // `config: { enabled: true }` 打开。默认值只存在于代码与部署组合层，
 // 用户开关是唯一的持久化写入方，因此「关掉」永远不会被写进设置文档。
@@ -563,6 +690,20 @@ const retryTextField = () =>
 // 默认开：保持原独立插件的默认行为（挂载即改写）。关掉 = 系统提示完全保持宿主原文。
 const alignField = () =>
   Schema.boolean().default(true).description("提示词对齐：改写宿主 workspace 指令的免责外壳句与审批限制句（运行时改写，不改宿主文件；默认开）");
+// ── personaPrefix 控制（2026-10-27）────────────────────────────────────────
+// 系统提示第一段（deployment:persona-prefix, order 0）的三档控制：
+//   keep   = 用 align.js 的定稿句（默认，行为与 0.12.0 一致）
+//   off    = **整段置空**，系统提示首句直接是载荷内容
+//   custom = 用 personaPrefixText 里的自定义文本（空文本等价 off）
+// 只有 align 开着时本字段才生效 —— 关掉 align 则系统提示完全保持宿主原文。
+const personaPrefixModeField = () =>
+  Schema.union(["keep", "off", "custom"])
+    .default("keep")
+    .description("系统提示首句（personaPrefix）处理方式：keep=用内置定稿句 / off=整段置空 / custom=用下方自定义文本");
+const personaPrefixTextField = () =>
+  Schema.string()
+    .default("")
+    .description("personaPrefix 的自定义文本（仅 mode=custom 时生效；留空等价于置空）");
 const SettingsSchema = Schema.object({
   enabled: enabledField(),
   mode: modeField(),
@@ -575,6 +716,8 @@ const SettingsSchema = Schema.object({
   retryMax: retryMaxField(),
   retryText: retryTextField(),
   align: alignField(),
+  personaPrefix: personaPrefixModeField(),
+  personaPrefixText: personaPrefixTextField(),
 }).description("Switch Armor / dsh-switch-armor 运行时开关");
 /** 0.2.x settings 表单面 schema：entry id = 插件 id，字段必须 volatile 才能在线编辑。 */
 export const Config = Schema.object({
@@ -589,6 +732,8 @@ export const Config = Schema.object({
   retryMax: retryMaxField().volatile(),
   retryText: retryTextField().volatile(),
   align: alignField().volatile(),
+  personaPrefix: personaPrefixModeField().volatile(),
+  personaPrefixText: personaPrefixTextField().volatile(),
 });
 
 // ── 会话级开关覆盖 ──────────────────────────────────────────────────────────────
@@ -780,6 +925,24 @@ function readState() {
     // ── 提示词对齐（v0.12.0）─────────────────────────────────────────────────
     // 未写配置即默认开（与原 dsh-armor-align 「挂载即生效」语义一致）。
     align: resolveField(resolved, runtimeOverride, ALIGN_FIELD) !== false,
+    // ── personaPrefix 控制（2026-10-27）──────────────────────────────────────
+    // 非法值一律回落 keep（绝不让手滑配置把系统提示首句清空）。
+    personaPrefix: PERSONA_PREFIX_MODES.includes(resolveField(resolved, runtimeOverride, PERSONA_PREFIX_FIELD))
+      ? resolveField(resolved, runtimeOverride, PERSONA_PREFIX_FIELD)
+      : "keep",
+    personaPrefixText: (() => {
+      const raw = resolveField(resolved, runtimeOverride, PERSONA_PREFIX_TEXT_FIELD);
+      return typeof raw === "string" ? raw : "";
+    })(),
+    // ── Keysmith-Switch 表达层改写（2026-11-01）────────────────────────────
+    // 未写配置即默认开（与 align 同一语义：装上就生效）；packs 非法或全空时回落三包全开。
+    rewrite: resolveField(resolved, runtimeOverride, REWRITE_FIELD) !== false,
+    rewritePacks: (() => {
+      const raw = resolveField(resolved, runtimeOverride, REWRITE_PACKS_FIELD);
+      if (!Array.isArray(raw)) return [...REWRITE_PACK_IDS];
+      const picked = REWRITE_PACK_IDS.filter((id) => raw.includes(id));
+      return picked.length > 0 ? picked : [...REWRITE_PACK_IDS];
+    })(),
   };
 }
 
@@ -867,6 +1030,8 @@ async function handleSettingsRoute(req, res) {
         payloads: PAYLOAD_IDS.map((pid) => ({ id: pid, label: PAYLOADS[pid]?.label ?? pid })),
         // 按模型族覆盖 + 自定义载荷（0.10.0；0.10.2 行清单改用模型族而非载荷档）
         modelOverrides: state.modelOverrides,
+        // 每族「生效双段」：override.dualLayer 优先，否则按生效载荷原生口径（设置页高亮用）
+        effectiveDual: effectiveDualMap(),
         customPayload: state.customPayload,
         overridePayloadIds: OVERRIDE_PAYLOAD_IDS,
         families: MODEL_FAMILIES.map((fid) => ({ id: fid, hint: MODEL_FAMILY_HINTS[fid] ?? "" })),
@@ -880,6 +1045,8 @@ async function handleSettingsRoute(req, res) {
         retryText: state.retryText,
         // 提示词对齐（v0.12.0，原 dsh-armor-align）
         align: state.align,
+        personaPrefix: state.personaPrefix,
+        personaPrefixText: state.personaPrefixText,
         source: runtimeOverride !== undefined ? "override" : "config",
       });
     }
@@ -985,16 +1152,44 @@ async function handleSettingsRoute(req, res) {
     }
     patch[RETRY_TEXT_FIELD] = body.retryText.slice(0, 500);
   }
+  if (body.personaPrefix !== undefined) {
+    if (!PERSONA_PREFIX_MODES.includes(body.personaPrefix)) {
+      return sendJson(res, 400, { ok: false, error: 'expected { personaPrefix: "keep" | "off" | "custom" }' });
+    }
+    patch[PERSONA_PREFIX_FIELD] = body.personaPrefix;
+  }
+  if (body.personaPrefixText !== undefined) {
+    if (typeof body.personaPrefixText !== "string") {
+      return sendJson(res, 400, { ok: false, error: "expected { personaPrefixText: string }" });
+    }
+    patch[PERSONA_PREFIX_TEXT_FIELD] = body.personaPrefixText.slice(0, 4000);
+  }
   if (body.align !== undefined) {
     if (typeof body.align !== "boolean") {
       return sendJson(res, 400, { ok: false, error: "expected { align: boolean }" });
     }
     patch[ALIGN_FIELD] = body.align;
   }
+  if (body.rewrite !== undefined) {
+    if (typeof body.rewrite !== "boolean") {
+      return sendJson(res, 400, { ok: false, error: "expected { rewrite: boolean }" });
+    }
+    patch[REWRITE_FIELD] = body.rewrite;
+  }
+  if (body.rewritePacks !== undefined) {
+    if (!Array.isArray(body.rewritePacks) || body.rewritePacks.some((id) => !REWRITE_PACK_IDS.includes(id))) {
+      return sendJson(res, 400, { ok: false, error: 'expected { rewritePacks: ("wrap" | "lab" | "craft")[] }' });
+    }
+    const picked = REWRITE_PACK_IDS.filter((id) => body.rewritePacks.includes(id));
+    if (picked.length === 0) {
+      return sendJson(res, 400, { ok: false, error: "expected { rewritePacks: non-empty array }" });
+    }
+    patch[REWRITE_PACKS_FIELD] = picked;
+  }
   if (Object.keys(patch).length === 0) {
     return sendJson(res, 400, {
       ok: false,
-      error: "expected at least one of { enabled, mode, manualPayload, modelOverrides, customPayload, injectFile, baselinePolicy, autoRetry, retryMax, retryText, align }",
+      error: "expected at least one of { enabled, mode, manualPayload, modelOverrides, customPayload, injectFile, baselinePolicy, autoRetry, retryMax, retryText, align, personaPrefix, personaPrefixText, rewrite, rewritePacks }",
     });
   }
 
@@ -1036,6 +1231,7 @@ async function handleSettingsRoute(req, res) {
   return sendJson(res, 200, {
     ok: true,
     ...readState(),
+    effectiveDual: effectiveDualMap(),
     persisted,
     hasSettingsService,
     ...(persistError ? { persistError } : {}),
@@ -1108,14 +1304,41 @@ function composedPayloadText(context) {
 
 /**
  * 族默认载荷（v0.11.0 开箱即用）：无显式选择（manual / override）时，各族实际吃的载荷。
- * **只对 dsh 族设默认** —— 用户口径（2026-10-18）：「默认自持的是 dsh-gen4」，
- * 即 DeepSeek/未列模型不要 Keysmith 短稿（`dsh` 档），默认走**原自持契约稿** `dsh-gen4`
- * （`prompts/infinite-gen-4.md`，双段）。其余族保持同名档回落：
- * GLM/ChatGLM → `glm`（Keysmith ZCode 稿，带 [P] 人格首行）。
- * 两份自持稿的定位写死：**dsh-gen4 = 默认自持契约稿；dsv41v2 = 手动对抗强化稿**。
- * 想换：手动选对应载荷，或在覆盖表里指回去。
+ *
+ * **2026-10-27 全族改指 Goochbeater 上游稿**（用户指令「每一个分组的，对应我们每一个默认的
+ * 改成他的」）：十二个族的默认从「同名档 / dsh-gen4」整体切到 `gb-*` 系列 ——
+ *    dsh    → xiaomajiang（**2026-10-27 深夜再改**：用户要求小码酱稿接任；enilime 仍在表内可手动切回）
+ *    gpt56  → gb-gpt54（ENI policy for ChatGPT 5.4）
+ *    gpt6   → gb-gpt6（ChatGPT 6 - Sol Policy，对应 GPT-6 Astra）
+ *    gpt61  → gb-gpt6（同上；上游无 6.1 专属稿，Sol Policy 为最新代通用稿）
+ *    claude → claude（**2026-10-27 当晚回退**：用户要求恢复 Keysmith 载荷；gb-claude 仍在表内可手动选）
+ *    grok   → grok（**2026-10-27 当晚回退**：用户要求恢复 Keysmith 载荷；gb-grok 仍在表内可手动选）
+ *    glm    → enilime（GLM 5.3 那份与 DeepSeek ENI LIME 同源同内容，复用同一档）
+ *    kimi   → gb-kimi（Kimi K3）
+ *    muse   → muse（**2026-10-27 当晚回退**：用户要求恢复自撰 muse 载荷；gb-muse 仍在表内可手动选）
+ *    gemini4→ gemini4（沿用 Claude Policy 稿，上游 Argon 与 Muse Wonder 指向同一份）
+ *    gemini38→ gemini38（ENI for Gemini 3.8 那份与本地既有稿逐字相同，复用）
+ *    mimo   → mimo（本地既有稿与上游字节一致，不重复占用载荷档）
+ *
+ * **旧默认全部保留可切回**：`dsh-gen4`（原自持契约稿）、`dsh`、`glm`（Keysmith [P] 稿）等
+ * 仍在载荷表里，手动选中或在覆盖表里指回即可。回滚本轮的族默认：把这张表还原成
+ * `{ dsh: "dsh-gen4" }` 一行（其余族回落同名档）。
  */
-const FAMILY_DEFAULT_PAYLOADS = { dsh: "dsh-gen4" };
+const FAMILY_DEFAULT_PAYLOADS = {
+  dsh: "xiaomajiang",    // 2026-10-27 晚：用户要求小码酱稿接任 DeepSeek 族默认；enilime 仍在表内可切回
+  gpt56: "gb-gpt54",
+  gpt6: "gb-gpt6",
+  gpt61: "gpt61-fusion", // 2026-11-01 用户要求：GPT-6.1 族走融合稿（NSFW policy 骨架 + Keysmith 交付段）
+  claude: "claude-opus55", // 2026-11-01 用户要求：claude 族走融合稿 v2（NSFW policy 骨架 + Keysmith 交付段）
+  grok: "grok",          // 2026-10-27 用户要求回退：grok 族回到 Keysmith 载荷
+  glm: "glm",            // 2026-11-09 GLM 族回 Pier 稿（10-27 全族推 enilime 实测后唯一没回退的档）
+  kimi: "gb-kimi",
+  muse: "muse",          // 2026-10-27 用户要求回退：muse 族回到自撰 muse 载荷
+  qwen: "qwen",          // 2026-10-28：qwen 族走上游 qwen-3.8 派生稿
+  gemini4: "gemini4",
+  gemini38: "gemini38",
+  mimo: "mimo",
+};
 
 /**
  * 解析本次求值该用哪份载荷 id。
@@ -1128,6 +1351,16 @@ function resolvePayloadId(context) {
   // manual 模式：全局统一，不受族覆盖影响（覆盖语义是「改 auto 的判断」）。
   if (state.mode === "manual") return state.manualPayload;
   const model = modelOf(context);
+  // ── 子代理取不到自身模型：**不注入**，而不是回落 dsh 族 ────────────────────
+  // 2026-10-28 修。matchPayloadId(undefined) 会返回 "dsh"，于是子代理在拿不到
+  // 自己的模型时，会静默吃下 dsh 族的默认稿（当前是小码酱）—— 这正是
+  // 「子代理注入了别的模型的提示词」的另一半原因：不是选错了族，而是根本
+  // 没认出自己的路由就默认当成 DeepSeek。
+  // 子代理的载荷必须来自它自己的模型；认不出就不注入（返回空 id，上层按零残留处理）。
+  // 主代理保持原行为：取不到就按 dsh 族兜底，避免主会话丢载荷。
+  if (isSubagent(context?.agent) && (model === undefined || model.length === 0)) {
+    return undefined;
+  }
   const family = matchPayloadId(model);
   // ── 按模型族覆盖（0.10.0）──────────────────────────────────────────────────
   // auto 模式下，某族配了 override.payload 就用它（可以是任意载荷 id 或 "custom"）。
@@ -1154,6 +1387,9 @@ function resolvePayloadId(context) {
 function dualLayerFor(context) {
   const state = readState();
   const id = resolvePayloadId(context);
+  // 子代理认不出自身模型 → 主槽位已零注入，镜像槽位必须同步为零，
+  // 否则镜像段会单独注入（双段的前提是两段同源，这里根本没源）。
+  if (id === undefined) return false;
   if (state.mode !== "manual") {
     const family = matchPayloadId(modelOf(context));
     const override = state.modelOverrides?.[family];
@@ -1165,22 +1401,54 @@ function dualLayerFor(context) {
 }
 
 /**
+ * 每族「生效双段」静态展开（设置页 UI 口径）：override.dualLayer 优先；
+ * manual 模式下族覆盖被 dualLayerFor 忽略，全员以 manualPayload 的原生口径为准；
+ * 其余按生效载荷（override.payload > 族默认 > 同名档）是否属自持族判定。
+ * 与 {@link dualLayerFor} 同源 —— 那里按 context 逐会话求值，这里按族展开供渲染。
+ * @returns {Record<string, boolean>} 族 id → 该族当前生效的注入段数是否为双段。
+ */
+function effectiveDualMap() {
+  const state = readState();
+  const result = {};
+  for (const fid of MODEL_FAMILIES) {
+    if (state.mode === "manual") {
+      result[fid] = NATIVE_PAYLOAD_IDS.includes(state.manualPayload);
+      continue;
+    }
+    const override = state.modelOverrides?.[fid];
+    if (override && typeof override.dualLayer === "boolean") {
+      result[fid] = override.dualLayer;
+      continue;
+    }
+    const payload = override && typeof override.payload === "string" && override.payload.length > 0
+      ? override.payload
+      : FAMILY_DEFAULT_PAYLOADS[fid] ?? fid;
+    result[fid] = NATIVE_PAYLOAD_IDS.includes(payload);
+  }
+  return result;
+}
+
+/**
  * 从 section 求值 context 里取「本会话当前实际使用的模型 id」。
  *
  * **取值链（顺序不可颠倒）**：
- *   ① `agent.session.requestHeader().config.model` —— 会话**实际发出**的请求头。
- *      这是唯一能反映「会话内切换过模型」的来源。
- *   ② `agent.options.model` —— agent 创建时的声明路由（**可能是默认模型，不是会话选择**）。
+ *   ① `agent.session.requestHeader().config.model` —— 会话**实际发出**的请求头，
+ *      唯一能反映「会话内切换过模型」的来源；首步尚未写出。
+ *   ② `agent.model.current().model` —— 本 agent 的当前选择（官方 `AgentModel.current()`
+ *      = pending `model/selection` → lastUsed → options），首步靠它：会话选了模型用选的，
+ *      没选则由 options 的动态 getter 给出**当前默认模型**。
+ *   ③ `agentDefaultModel.currentSelection().model` —— 全局默认服务兜底（② 投影未就绪时）。
+ *   ④ `agent.options.model` —— 创建时声明的路由（最终兜底）。
  *
- * 为什么必须优先 ①：`agent.options` 在 `new Agent(...)` 时由
- * `sessionController.agentOptions()` → `agentDefaultModel.currentSelection()` 固定
- * （`AgentOptions` 的 options 是 readonly），而会话内切换模型写的是 `model/selection`
- * 事件 + `session.requestHeader()`。本机 `agent-default-model` = `qoder/dfmodel`，
- * 而会话选的是 `openai-codex/gpt-6.1-sol` —— 只读 ② 会把 GPT 会话误判成非 GPT 模型，
- * 这正是「auto 模式不分流」的根因（manual 模式绕过判定所以正常）。
+ * 为什么 ② 必须在 ③ 之前：`model/selection`（seq 3-5）早于首步 `system/message`（seq 10），
+ * 而 `request/header`（seq 17）还没写。旧链跳过 ② 直接读全局默认，会话自己选的模型被
+ * 全局默认盖掉 —— 表现为「首步注入了别的模型的稿、次步才纠正」。options 是
+ * `sessionController.agentOptions()` 里的动态 getter（指向 `agentDefaultModel.currentSelection()`），
+ * 不是创建时冻结值，所以「没选模型」时 ② 天然等于「我现在的默认值」。
  *
- * 官方对照：`packages/api/session-controller/src/agent.ts` 的 `selectionFor(agent).current`
- * 用的就是「pending 选择 → requestHeader().config → defaultModel」这条链。
+ * 官方对照：`packages/core/agent/src/model-selection.ts` 的 `AgentModel.current()` 与
+ * `packages/api/session-controller/src/agent.ts` 的 `agentOptions()`。
+ * 子代理另有分叉（见函数体）：只认自身选择，绝不读全局默认，认不出就零注入。
  * agent 是宿主内部对象，全程 try 包裹，取不到就回落 DSH 自持载荷。
  * @param {object|undefined} context assemble context。
  * @returns {string|undefined} 模型 id。
@@ -1192,19 +1460,81 @@ function modelOf(context) {
     const logged = agent?.session?.requestHeader?.();
     const loggedModel = logged?.config?.model;
     if (typeof loggedModel === "string" && loggedModel.length > 0) return loggedModel;
-    // ② 当前默认模型。**首步（本会话还没写过 request/header）时必须走这层**：
-    //    `agent.options.model` 是 agent 创建那一刻冻结的值，若那之后用户切过默认模型，
-    //    它会停在一个陈旧名字上 —— 实测踩过：某会话首步据此判成 GPT、次步才纠正为 DSH。
-    //    官方 `selectionFor(agent).current` 的第三级也是 defaultModel，而不是 agent.options。
+    // ── 子代理（depth > 0）：**只认自己的路由，绝不读全局默认** ────────────────
+    // 2026-10-28 修。根因：`agentDefaultModel.currentSelection()` 是**全局**默认模型，
+    // 与子代理无关。子代理的模型由宿主 `resolveChildAgentOptions` 决定 ——
+    // 「父的 requestHeader → 父 options → 本 child 的 requested 覆盖」，最终钉在
+    // `agent.options.model` 上（见 packages/subagent/subagent/src/child-agent.ts）。
+    // 官方 `AgentModel.current()` 的链也是「recordedSelection（pending/lastUsed）→
+    // options」，同样没有全局 defaultModel 这一级。
+    // 原实现把全局默认插在第 ② 层，于是子代理首步（还没有 request/header）时，
+    // 只要全局默认与子代理自身模型不同，就会拿**主代理的模型**去选载荷 ——
+    // 表现为「子代理注入了别的模型的提示词」。这就是那个 bug。
+    if (isSubagent(agent)) {
+      // ② 子代理自身的会话选择（pending/lastUsed）—— 与官方 AgentModel 同源。
+      const own = ownSelectionOf(agent);
+      if (typeof own === "string" && own.length > 0) return own;
+      // ③ 子代理创建时钉下的路由（宿主 resolveChildAgentOptions 的产物）。
+      const declared = agent?.options?.model;
+      if (typeof declared === "string" && declared.length > 0) return declared;
+      return undefined;
+    }
+    // ── 主代理首步：先读「本 agent 当前模型选择」────────────────────────────
+    // 2026-11-07 修。首步 `system/message`（seq 10）之前，会话已经写过
+    // `model/selection`（seq 3-5）而 `request/header`（seq 17）还没写。
+    // 官方 `AgentModel.current()` = pending → lastUsed → options，其中 options 是
+    // 动态 getter（session-controller agentOptions() → agentDefaultModel.currentSelection()），
+    // 即「会话当前选的模型，没选就是当前默认模型」。这一层同时覆盖两种首步：
+    //   用户开会话时选了模型 → pending；没选 → 当前默认（不是创建时冻结的旧值）。
+    // 旧实现跳过这层直接读全局默认服务，会话自己选的模型被全局默认盖掉 ——
+    // 表现为「首步注入了别的模型的稿、次步才纠正」。默认稿映射表不动，
+    // 只是把取值链的源头对准「我现在的默认值」。
+    const current = ownSelectionOf(agent);
+    if (typeof current === "string" && current.length > 0) return current;
+    // ── 全局默认服务兜底（agent.model.current() 投影尚未就绪 / 服务缺席时）──
     const picked = currentDefaultModelOf(agent);
     if (typeof picked === "string" && picked.length > 0) return picked;
-    // ③ agent 创建时声明的路由（最终兜底）
+    // ④ agent 创建时声明的路由（最终兜底）
     const declared = agent?.options?.model;
     if (typeof declared === "string" && declared.length > 0) return declared;
     return undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * 是否子代理。宿主把递归深度钉在 `agent.options.subagentDepth`（创建时写入），
+ * 同时会话头里有 `delegationDepth`（持久化形态）。两处取最大值，与官方
+ * `delegationDepthOf`（packages/subagent/subagent/src/depth.ts）一致 ——
+ * 任一非零即视为子代理。
+ * @param {object|undefined} agent host agent 对象。
+ * @returns {boolean} 子代理为 true。
+ */
+function isSubagent(agent) {
+  const runtime = agent?.options?.subagentDepth;
+  if (typeof runtime === "number" && runtime > 0) return true;
+  const header = agent?.session?.header?.delegationDepth;
+  if (typeof header === "number" && header > 0) return true;
+  return false;
+}
+
+/**
+ * 子代理自身的模型选择 —— 读会话日志里的 `model/selection` 投影
+ * （官方 `AgentModel.recordedSelection()` 用的就是 `pending ?? lastUsed`）。
+ * 取不到时返回 undefined，由调用方回落到 `options.model`。
+ * @param {object|undefined} agent host agent 对象。
+ * @returns {string|undefined} 模型 id。
+ */
+function ownSelectionOf(agent) {
+  try {
+    const state = agent?.model?.current?.();
+    const model = state?.model;
+    if (typeof model === "string" && model.length > 0) return model;
+  } catch {
+    /* 投影尚未就绪：静默回落 */
+  }
+  return undefined;
 }
 
 /**
@@ -1260,6 +1590,12 @@ function providerOf(context) {
  */
 function payloadTextFor(context, _slot) {
   const id = resolvePayloadId(context);
+  // ── 子代理认不出自身模型：零注入 ────────────────────────────────────────────
+  // resolvePayloadId 对子代理返回 undefined 时，这里必须返回空串（section 求值为空
+  // → renderPrompt 过滤 → 零残留），**不能**走下面的回落链：那条链最终会返回
+  // PROMPT_TEXT（Keysmith 短稿），等于给子代理注入了一份与本机模型无关的稿。
+  // 空串是「关掉」语义，此处正是要「关掉」。
+  if (id === undefined) return "";
   // ── 自定义载荷（0.10.0）────────────────────────────────────────────────────
   // id = "custom" 时文本来自 settings 的 customPayload.text（用户在设置页输入框粘贴）。
   // 空文本视为「未配置」→ 走回落链，与文件缺失同语义（绝不静默注入空串）。
@@ -1312,7 +1648,7 @@ const profileTool = {
       promptSource: [
         "prompts/infinite-gen-4.md",
         "prompts/infinite-gen-4.1-flash.md",
-        "prompts/dsv41-v2.md",
+        "prompts/xiaomajiang.md",
         "prompts/glm53-cn-sandbox.md",
         "prompts/gpt-6.1-sol.md",
         "prompts/gpt-6-astra.md",
@@ -1330,6 +1666,8 @@ const profileTool = {
         autoRetry: state.autoRetry,
         retryMax: state.retryMax,
         align: state.align,
+        personaPrefix: state.personaPrefix,
+        personaPrefixText: state.personaPrefixText,
       },
       // 载荷路由：auto = 按当前模型身份选（族覆盖可改判）；manual = 固定用手动指定那份
       payloadRouting: {
@@ -1361,7 +1699,7 @@ const profileTool = {
           order: REINFORCE_SECTION_ORDER,
           // GPT 系走单段（载荷自带 ACTION 绑定规则，重复注入会自我冲突）
           enabled: enabled && DUAL_LAYER_INJECTION,
-          note: "仅自持族（dsh / dsh-gen4）非空；外部载荷恒为空串（单段）",
+          note: "仅自持族（dsh / dsh-gen4 / glm53cn）非空；其余各份恒为空串（单段）",
         },
       ],
       mode: enabled
@@ -1483,6 +1821,8 @@ function armorProjectionApply(state, event) {
 export const __testPayloadIds = PAYLOAD_IDS;
 export const __testRoute = handleSettingsRoute;
 export const __testMatchPayloadId = matchPayloadId;
+/** 归一化纯函数（探针直接测标记前缀剥离，不经过分流）。 */
+export const __testNormalizeModelId = normalizeModelId;
 export const __testResolvePayloadId = resolvePayloadId;
 export const __testReadState = readState;
 export const __testGated = gated;
@@ -1674,6 +2014,54 @@ export function apply(ctx) {
   // 「listener 可以 agent.steer(...) 让机器重读 inbox 再跑一步」。这里在边界前检查
   // 本轮最后一条 assistant 文本，判拒（scoreResponse verdict=refusal）就 steer 一条
   // 续跑消息。子代理会话（delegationDepth>0）跳过；按会话计次封顶 retryMax。
+  // ── Keysmith-Switch 表达层改写（agent/pre-step，2026-11-01）──────────────
+  // 用户消息进入模型之前做字面替换（wrap / lab / craft）。改写后的文本会被记录进会话，
+  // 与上游 app 的行为一致。斜杠命令整条跳过；无命中时逐字不变（绝不改动无关请求）。
+  // 放在下游 next() 之后：不抢占别的 pre-step 监听器，只改最终 enter 决策里的 messages。
+  const rewritePacks = loadRewritePacks(import.meta.url);
+  if (typeof ctx.on === "function") {
+    ctx.effect(() => {
+      let off;
+      try {
+        off = ctx.on("agent/pre-step", async (_payload, next) => {
+          const downstream = await next();
+          try {
+            if (!downstream || downstream.kind !== "enter" || !Array.isArray(downstream.messages)) return downstream;
+            const state = readState();
+            if (!state.rewrite) return downstream;
+            let changed = false;
+            const messages = downstream.messages.map((message) => {
+              if (!message || !Array.isArray(message.content)) return message;
+              let touched = false;
+              const content = message.content.map((part) => {
+                if (!part || part.type !== "text" || typeof part.text !== "string") return part;
+                const out = rewriteText(rewritePacks, state.rewritePacks, part.text);
+                if (out === part.text) return part;
+                touched = true;
+                return { ...part, text: out };
+              });
+              if (!touched) return message;
+              changed = true;
+              return { ...message, content };
+            });
+            return changed ? { ...downstream, messages } : downstream;
+          } catch {
+            return downstream;
+          }
+        }, { global: true });
+      } catch {
+        off = undefined;
+      }
+      return () => {
+        try {
+          off?.();
+        } catch {
+          // disposer 失败忽略
+        }
+      };
+    }, "switch-armor: keysmith rewrite");
+  }
+
   const retryCounts = new Map();
   if (typeof ctx.on === "function") {
     ctx.effect(() => {
@@ -1723,5 +2111,12 @@ export function apply(ctx) {
   // 与载荷注入同属一条管线：载荷负责「写进去」，对齐负责「把宿主自己写进去的
   // 削弱句改回来」（workspace 外壳句 + 审批限制句）。监听器常驻、开关在回调里读，
   // 设置页关闭后下一个模型步即恢复宿主原文，无需重启。
-  installAlign(ctx, () => readState().align);
+  installAlign(
+    ctx,
+    () => readState().align,
+    () => {
+      const st = readState();
+      return { mode: st.personaPrefix, text: st.personaPrefixText };
+    },
+  );
 }
